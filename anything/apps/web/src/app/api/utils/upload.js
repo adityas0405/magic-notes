@@ -1,0 +1,18 @@
+import { apiBaseUrl } from "../../../utils/api";
+
+async function upload({ url, buffer, base64 }) {
+  const response = await fetch(`${apiBaseUrl}/_create/api/upload/`, {
+    method: "POST",
+    headers: {
+      "Content-Type": buffer ? "application/octet-stream" : "application/json"
+    },
+    body: buffer ? buffer : JSON.stringify({ base64, url })
+  });
+  const data = await response.json();
+  return {
+    url: data.url,
+    mimeType: data.mimeType || null
+  };
+}
+export { upload };
+export default upload;

@@ -1,0 +1,23 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --color-base: 248 249 244;
+  --color-surface: 255 255 255;
+  --color-primary: 16 140 135;
+  --color-secondary: 40 96 168;
+  --color-accent: 72 186 118;
+  --color-text: 15 23 42;
+  --color-muted: 100 116 139;
+  --color-border: 226 232 240;
+}
+
+body {
+  font-family: "Inter", system-ui, -apple-system, sans-serif;
+}
+
+.atlas-hero-bg {
+  background-image: radial-gradient(rgba(16, 140, 135, 0.08) 1px, transparent 1px);
+  background-size: 28px 28px;
+}

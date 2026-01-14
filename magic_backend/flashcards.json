@@ -1,0 +1,14 @@
+[
+    {
+        "question": "What does Newton’s 1st Law of Motion state about an object in motion?",
+        "answer": "An object in motion stays in motion unless acted upon by an external force."
+    },
+    {
+        "question": "What happens to an object at rest according to Newton's 1st Law?",
+        "answer": "An object at rest stays at rest unless acted upon by an external force."
+    },
+    {
+        "question": "What is another name for Newton’s 1st Law of Motion?",
+        "answer": "The law of inertia."
+    }
+]
