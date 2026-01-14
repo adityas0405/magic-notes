@@ -1,26 +1,12 @@
 import { Link, useParams } from "react-router-dom";
 import PrimaryButton from "../components/PrimaryButton";
-
-const notebooks = [
-  {
-    id: 1,
-    title: "Organic Chemistry Basics",
-    updated: "Last edited 1 days ago",
-    pages: 0,
-    cards: 4,
-  },
-  {
-    id: 2,
-    title: "World War II Timeline",
-    updated: "Last edited 1 days ago",
-    pages: 0,
-    cards: 6,
-  },
-];
+import { useSubjectNotebooks } from "../lib/queries";
 
 const SubjectDetailPage = () => {
   const { subjectId } = useParams();
-  const subjectName = subjectId === "1" ? "Biology" : "Biology";
+  const { data, isLoading } = useSubjectNotebooks(subjectId);
+  const subjectName = data?.subject.name ?? "Subject";
+  const notebooks = data?.notebooks ?? [];
 
   return (
     <div className="space-y-6">
@@ -36,29 +22,39 @@ const SubjectDetailPage = () => {
           <p className="text-sm text-muted">Your notebooks and study materials</p>
         </div>
       </div>
-      <PrimaryButton className="rounded-xl px-5 py-2 text-xs">
+      {/* TODO: enable notebook creation once backend supports it. */}
+      <PrimaryButton
+        className="rounded-xl px-5 py-2 text-xs opacity-60 cursor-not-allowed"
+        disabled
+      >
         + New Notebook
       </PrimaryButton>
 
-      <div className="space-y-4">
-        {notebooks.map((notebook) => (
-          <Link
-            key={notebook.id}
-            to={`/app/subjects/${subjectId}/notebooks/${notebook.id}`}
-            className="flex items-center gap-4 rounded-2xl border border-border bg-surface p-5 shadow-card"
-          >
-            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-50 text-primary">
-              ▢
-            </div>
-            <div>
-              <h3 className="text-sm font-semibold">{notebook.title}</h3>
-              <p className="text-xs text-muted">
-                {notebook.updated} · {notebook.pages} Pages · {notebook.cards} Cards
-              </p>
-            </div>
-          </Link>
-        ))}
-      </div>
+      {isLoading ? (
+        <p className="text-sm text-muted">Loading notebooks…</p>
+      ) : notebooks.length ? (
+        <div className="space-y-4">
+          {notebooks.map((notebook) => (
+            <Link
+              key={notebook.id}
+              to={`/app/subjects/${subjectId}/notebooks/${notebook.id}`}
+              className="flex items-center gap-4 rounded-2xl border border-border bg-surface p-5 shadow-card"
+            >
+              <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-50 text-primary">
+                ▢
+              </div>
+              <div>
+                <h3 className="text-sm font-semibold">{notebook.name}</h3>
+                <p className="text-xs text-muted">
+                  {notebook.note_count} Notes
+                </p>
+              </div>
+            </Link>
+          ))}
+        </div>
+      ) : (
+        <p className="text-sm text-muted">No notebooks yet.</p>
+      )}
     </div>
   );
 };

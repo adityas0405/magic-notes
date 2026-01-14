@@ -127,6 +127,65 @@ class AuthPayload(BaseModel):
     email: str
     password: str
 
+security = HTTPBearer(auto_error=False)
+
+
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def verify_password(password: str, password_hash: str) -> bool:
+    return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
+
+
+def create_access_token(user: User) -> str:
+    now = datetime.datetime.utcnow()
+    expires_at = now + datetime.timedelta(seconds=JWT_EXPIRES_SECONDS)
+    payload = {
+        "user_id": user.id,
+        "email": user.email,
+        "iat": int(now.timestamp()),
+        "exp": int(expires_at.timestamp()),
+    }
+    token = jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+    if isinstance(token, bytes):
+        return token.decode("utf-8")
+    return token
+
+
+def serialize_user(user: User) -> Dict[str, Any]:
+    return {
+        "id": user.id,
+        "email": user.email,
+        "created_at": user.created_at.isoformat(),
+    }
+
+
+def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: Session = Depends(get_db),
+) -> User:
+    if not credentials or credentials.scheme.lower() != "bearer":
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        payload = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=["HS256"])
+    except jwt.ExpiredSignatureError as exc:
+        raise HTTPException(status_code=401, detail="Token expired") from exc
+    except jwt.InvalidTokenError as exc:
+        raise HTTPException(status_code=401, detail="Invalid token") from exc
+
+    user_id = payload.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token payload")
+
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    return user
+
+
 class NoteCreate(BaseModel):
     title: Optional[str] = None
     device: Optional[str] = None
@@ -230,6 +289,69 @@ def owned_note(db: Session, note_id: int, user_id: int) -> Optional[Note]:
             Notebook.user_id == user_id,
         )
     ).scalar_one_or_none()
+
+def ensure_user_defaults(db: Session, user: User) -> None:
+    subject = get_or_create_default_subject(db, user)
+    get_or_create_default_notebook(db, user, subject)
+
+
+def throttle_login(request: Request) -> None:
+    client_host = request.client.host if request.client else "unknown"
+    now = time.time()
+    attempts = login_attempts.get(client_host, [])
+    attempts = [attempt for attempt in attempts if now - attempt < LOGIN_THROTTLE_WINDOW_SECONDS]
+    if len(attempts) >= LOGIN_THROTTLE_MAX_ATTEMPTS:
+        raise HTTPException(status_code=429, detail="Too many login attempts")
+    attempts.append(now)
+    login_attempts[client_host] = attempts
+
+
+@app.post("/api/auth/signup")
+async def signup(payload: AuthPayload, db: Session = Depends(get_db)):
+    existing = db.execute(
+        select(User).where(User.email == payload.email.lower())
+    ).scalar_one_or_none()
+    if existing:
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    user = User(email=payload.email.lower(), password_hash=hash_password(payload.password))
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    ensure_user_defaults(db, user)
+
+    token = create_access_token(user)
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user": serialize_user(user),
+    }
+
+
+@app.post("/api/auth/login")
+async def login(payload: AuthPayload, request: Request, db: Session = Depends(get_db)):
+    throttle_login(request)
+    user = db.execute(
+        select(User).where(User.email == payload.email.lower())
+    ).scalar_one_or_none()
+    if not user or not verify_password(payload.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    ensure_user_defaults(db, user)
+
+    token = create_access_token(user)
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user": serialize_user(user),
+    }
+
+
+@app.get("/api/auth/me")
+async def me(current_user: User = Depends(get_current_user)):
+    return {"user": serialize_user(current_user)}
+
 
 @app.post("/api/notes")
 async def create_note(
@@ -343,6 +465,12 @@ async def get_note(
         "id": note.id,
         "title": note.title,
         "summary": note.summary,
+        "subject": {
+            "id": note.notebook.subject.id if note.notebook and note.notebook.subject else None,
+            "name": note.notebook.subject.name
+            if note.notebook and note.notebook.subject
+            else None,
+        },
         "notebook": {
             "id": note.notebook.id,
             "name": note.notebook.name,

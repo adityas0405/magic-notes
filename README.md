@@ -61,3 +61,5 @@ npm run dev
 1. Flutter uploads notes/strokes/files → FastAPI backend.
 2. Backend stores metadata in PostgreSQL and files in object storage.
 3. Atlas web UI reads library and notes from the backend and displays them.
+
+<!-- redeploy -->
