@@ -8,13 +8,28 @@ import NotebookDetailPage from "./NotebookDetailPage";
 import SettingsPage from "./SettingsPage";
 import DashboardLayout from "./DashboardLayout";
 import ProtectedRoute from "./ProtectedRoute";
+import PublicRoute from "./PublicRoute";
 
 const App = () => {
   return (
     <Routes>
       <Route path="/" element={<HomePage />} />
-      <Route path="/login" element={<LoginPage />} />
-      <Route path="/signup" element={<SignupPage />} />
+      <Route
+        path="/login"
+        element={
+          <PublicRoute>
+            <LoginPage />
+          </PublicRoute>
+        }
+      />
+      <Route
+        path="/signup"
+        element={
+          <PublicRoute>
+            <SignupPage />
+          </PublicRoute>
+        }
+      />
       <Route
         path="/app"
         element={

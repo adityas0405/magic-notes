@@ -9,6 +9,8 @@ Fly.io with managed PostgreSQL and S3-compatible object storage.
 Use `magic_backend/.env.example` as a template and configure these in Railway/Fly:
 
 - `DATABASE_URL` (PostgreSQL)
+- `JWT_SECRET` (signing secret for auth tokens)
+- `JWT_EXPIRES_SECONDS` (optional, defaults to 604800)
 - `CORS_ORIGINS` (your Vercel domain)
 - `CORS_ORIGIN_REGEX` (optional, e.g. `https://.*\\.vercel\\.app`)
 - `STORAGE_BACKEND` (`s3` recommended)

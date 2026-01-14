@@ -2,7 +2,12 @@ import { NavLink } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 
 const Sidebar = () => {
-  const { logout } = useAuth();
+  const { logout, user } = useAuth();
+  const initials =
+    user?.email
+      .split("@")[0]
+      .slice(0, 2)
+      .toUpperCase() || "AA";
 
   return (
     <aside className="flex h-screen w-64 flex-col border-r border-border bg-surface px-6 py-6">
@@ -43,11 +48,13 @@ const Sidebar = () => {
       <div className="mt-auto space-y-4">
         <div className="flex items-center gap-3 rounded-2xl border border-border bg-base px-4 py-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-full bg-accent text-white text-sm font-semibold">
-            JD
+            {initials}
           </div>
           <div>
-            <p className="text-sm font-semibold">John Doe</p>
-            <p className="text-xs text-muted">john@example.com</p>
+            <p className="text-sm font-semibold">
+              {user?.email ? user.email.split("@")[0] : "Atlas User"}
+            </p>
+            <p className="text-xs text-muted">{user?.email ?? "Signed in"}</p>
           </div>
         </div>
         <button

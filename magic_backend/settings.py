@@ -16,12 +16,16 @@ def _parse_origins(value: str | None) -> List[str]:
 
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
+JWT_SECRET = os.environ.get("JWT_SECRET")
+JWT_EXPIRES_SECONDS = int(os.environ.get("JWT_EXPIRES_SECONDS", "604800"))
 
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL must be set for the API service.")
+if not JWT_SECRET:
+    raise RuntimeError("JWT_SECRET must be set for the API service.")
 
 
 STORAGE_BACKEND = os.environ.get("STORAGE_BACKEND", "local").lower()
