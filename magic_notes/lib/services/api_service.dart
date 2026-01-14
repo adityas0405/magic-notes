@@ -7,9 +7,34 @@ import '../models/drawing.dart';
 import '../models/note.dart';
 
 class ApiService {
-  ApiService({this.baseUrl = apiBaseUrl});
+  ApiService({this.baseUrl = apiBaseUrl, String? authToken})
+      : _authToken = authToken;
 
   final String baseUrl;
+  String? _authToken;
+
+  /// Example login flow:
+  /// final response = await http.post(
+  ///   Uri.parse('$baseUrl/api/auth/login'),
+  ///   headers: {'Content-Type': 'application/json'},
+  ///   body: jsonEncode({'email': email, 'password': password}),
+  /// );
+  /// final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+  /// apiService.setAuthToken(decoded['access_token'] as String);
+  void setAuthToken(String token) {
+    _authToken = token;
+  }
+
+  Map<String, String> _headers({bool json = true}) {
+    final headers = <String, String>{};
+    if (json) {
+      headers['Content-Type'] = 'application/json';
+    }
+    if (_authToken != null && _authToken!.isNotEmpty) {
+      headers['Authorization'] = 'Bearer $_authToken';
+    }
+    return headers;
+  }
 
   Future<int> createNote({String? title, String? device, int? notebookId}) async {
     final payload = {
@@ -20,7 +45,7 @@ class ApiService {
 
     final response = await http.post(
       Uri.parse('$baseUrl/api/notes'),
-      headers: {'Content-Type': 'application/json'},
+      headers: _headers(),
       body: jsonEncode(payload),
     );
 
@@ -40,7 +65,7 @@ class ApiService {
 
     final response = await http.post(
       Uri.parse('$baseUrl/api/notes/$noteId/strokes'),
-      headers: {'Content-Type': 'application/json'},
+      headers: _headers(),
       body: jsonEncode(payload),
     );
 
@@ -50,7 +75,8 @@ class ApiService {
   }
 
   Future<List<NotebookSummary>> fetchNotebooks() async {
-    final response = await http.get(Uri.parse('$baseUrl/api/library'));
+    final response =
+        await http.get(Uri.parse('$baseUrl/api/library'), headers: _headers());
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw Exception('Failed to load library (${response.statusCode}).');
     }
@@ -63,8 +89,10 @@ class ApiService {
   }
 
   Future<List<NoteSummary>> fetchNotes(int notebookId) async {
-    final response =
-        await http.get(Uri.parse('$baseUrl/api/notebooks/$notebookId/notes'));
+    final response = await http.get(
+      Uri.parse('$baseUrl/api/notebooks/$notebookId/notes'),
+      headers: _headers(),
+    );
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw Exception('Failed to load notes (${response.statusCode}).');
     }
@@ -74,7 +102,10 @@ class ApiService {
   }
 
   Future<NoteDetail> fetchNoteDetail(int noteId) async {
-    final response = await http.get(Uri.parse('$baseUrl/api/notes/$noteId'));
+    final response = await http.get(
+      Uri.parse('$baseUrl/api/notes/$noteId'),
+      headers: _headers(),
+    );
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw Exception('Failed to load note (${response.statusCode}).');
     }

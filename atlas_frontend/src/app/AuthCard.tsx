@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import PrimaryButton from "../components/PrimaryButton";
+import { useState } from "react";
 
 type AuthCardProps = {
   title: string;
@@ -7,7 +8,7 @@ type AuthCardProps = {
   buttonLabel: string;
   footerText: string;
   footerLink: string;
-  onSubmit: (email: string) => void;
+  onSubmit: (email: string, password: string) => Promise<void>;
 };
 
 const AuthCard = ({
@@ -18,6 +19,9 @@ const AuthCard = ({
   footerLink,
   onSubmit,
 }: AuthCardProps) => {
+  const [error, setError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
   return (
     <div className="min-h-screen bg-base flex items-center justify-center px-6">
       <div className="w-full max-w-md rounded-3xl bg-surface p-10 shadow-card">
@@ -30,12 +34,21 @@ const AuthCard = ({
         <p className="mt-2 text-sm text-muted">{subtitle}</p>
         <form
           className="mt-6 space-y-4"
-          onSubmit={(event) => {
+          onSubmit={async (event) => {
             event.preventDefault();
+            setError(null);
+            setIsSubmitting(true);
             const form = event.currentTarget as HTMLFormElement;
             const formData = new FormData(form);
             const email = String(formData.get("email") || "");
-            onSubmit(email);
+            const password = String(formData.get("password") || "");
+            try {
+              await onSubmit(email, password);
+            } catch (submitError) {
+              setError("Unable to authenticate. Please check your details.");
+            } finally {
+              setIsSubmitting(false);
+            }
           }}
         >
           <div className="space-y-2">
@@ -64,8 +77,11 @@ const AuthCard = ({
               placeholder="••••••••"
             />
           </div>
-          <PrimaryButton className="w-full">{buttonLabel}</PrimaryButton>
+          <PrimaryButton className="w-full" disabled={isSubmitting}>
+            {isSubmitting ? "Working..." : buttonLabel}
+          </PrimaryButton>
         </form>
+        {error ? <p className="mt-4 text-xs text-red-500">{error}</p> : null}
         <p className="mt-6 text-center text-xs text-muted">
           {footerText} {" "}
           <Link className="text-primary" to={footerLink}>

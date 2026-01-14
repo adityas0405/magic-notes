@@ -1,22 +1,29 @@
 import datetime
 import json
+import logging
 import os
+import time
 import uuid
 from typing import Any, Dict, List, Optional
 
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+import bcrypt
+import jwt
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 
-from models import Base, Flashcard, Note, NoteFile, NoteStroke, Notebook
+from models import Base, Flashcard, Note, NoteFile, NoteStroke, Notebook, Subject, User
 from settings import (
     CORS_ORIGINS,
     CORS_ORIGIN_REGEX,
     DATABASE_URL,
+    JWT_EXPIRES_SECONDS,
+    JWT_SECRET,
     STORAGE_BACKEND,
     STORAGE_DIR,
     get_s3_client,
@@ -43,6 +50,7 @@ if STORAGE_BACKEND == "local":
     os.makedirs(STORAGE_DIR, exist_ok=True)
 
 app = FastAPI()
+logger = logging.getLogger(__name__)
 
 app.add_middleware(
     CORSMiddleware,
@@ -51,6 +59,43 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+LOGIN_THROTTLE_WINDOW_SECONDS = 60
+LOGIN_THROTTLE_MAX_ATTEMPTS = 5
+login_attempts: Dict[str, List[float]] = {}
+
+
+@app.on_event("startup")
+def warn_on_missing_columns() -> None:
+    from sqlalchemy import inspect
+
+    inspector = inspect(engine)
+    required_columns = {
+        "subjects": {"id", "name", "created_at", "user_id"},
+        "notebooks": {"id", "name", "color", "icon", "created_at", "user_id", "subject_id"},
+        "notes": {
+            "id",
+            "title",
+            "device",
+            "created_at",
+            "updated_at",
+            "summary",
+            "notebook_id",
+            "user_id",
+        },
+    }
+    for table, columns in required_columns.items():
+        if not inspector.has_table(table):
+            logger.warning("Missing table '%s'. Run migrations before using auth.", table)
+            continue
+        existing = {column["name"] for column in inspector.get_columns(table)}
+        missing = columns - existing
+        if missing:
+            logger.warning(
+                "Table '%s' is missing columns %s. Run migrations/backfill before using auth.",
+                table,
+                ", ".join(sorted(missing)),
+            )
 
 
 @app.get("/health")
@@ -64,6 +109,65 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+security = HTTPBearer(auto_error=False)
+
+
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def verify_password(password: str, password_hash: str) -> bool:
+    return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
+
+
+def create_access_token(user: User) -> str:
+    now = datetime.datetime.utcnow()
+    expires_at = now + datetime.timedelta(seconds=JWT_EXPIRES_SECONDS)
+    payload = {
+        "user_id": user.id,
+        "email": user.email,
+        "iat": int(now.timestamp()),
+        "exp": int(expires_at.timestamp()),
+    }
+    token = jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+    if isinstance(token, bytes):
+        return token.decode("utf-8")
+    return token
+
+
+def serialize_user(user: User) -> Dict[str, Any]:
+    return {
+        "id": user.id,
+        "email": user.email,
+        "created_at": user.created_at.isoformat(),
+    }
+
+
+def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: Session = Depends(get_db),
+) -> User:
+    if not credentials or credentials.scheme.lower() != "bearer":
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        payload = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=["HS256"])
+    except jwt.ExpiredSignatureError as exc:
+        raise HTTPException(status_code=401, detail="Token expired") from exc
+    except jwt.InvalidTokenError as exc:
+        raise HTTPException(status_code=401, detail="Invalid token") from exc
+
+    user_id = payload.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token payload")
+
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    return user
 
 
 class NoteCreate(BaseModel):
@@ -81,28 +185,133 @@ class FlashcardPayload(BaseModel):
     cards: Optional[List[Dict[str, str]]] = None
 
 
-def get_or_create_default_notebook(db: Session) -> Notebook:
+class AuthPayload(BaseModel):
+    email: str
+    password: str
+
+
+def get_or_create_default_subject(db: Session, user: User) -> Subject:
     existing = db.execute(
-        select(Notebook).where(Notebook.name == "Unsorted")
+        select(Subject).where(
+            Subject.user_id == user.id,
+            Subject.name == "Unsorted",
+        )
     ).scalar_one_or_none()
     if existing:
         return existing
 
-    notebook = Notebook(name="Unsorted", color="#14b8a6", icon="Atom")
+    subject = Subject(name="Unsorted", user=user)
+    db.add(subject)
+    db.commit()
+    db.refresh(subject)
+    return subject
+
+
+def get_or_create_default_notebook(db: Session, user: User, subject: Subject) -> Notebook:
+    existing = db.execute(
+        select(Notebook).where(
+            Notebook.user_id == user.id,
+            Notebook.subject_id == subject.id,
+            Notebook.name == "Unsorted",
+        )
+    ).scalar_one_or_none()
+    if existing:
+        return existing
+
+    notebook = Notebook(
+        name="Unsorted",
+        color="#14b8a6",
+        icon="Atom",
+        user=user,
+        subject=subject,
+    )
     db.add(notebook)
     db.commit()
     db.refresh(notebook)
     return notebook
 
 
+def ensure_user_defaults(db: Session, user: User) -> None:
+    subject = get_or_create_default_subject(db, user)
+    get_or_create_default_notebook(db, user, subject)
+
+
+def throttle_login(request: Request) -> None:
+    client_host = request.client.host if request.client else "unknown"
+    now = time.time()
+    attempts = login_attempts.get(client_host, [])
+    attempts = [attempt for attempt in attempts if now - attempt < LOGIN_THROTTLE_WINDOW_SECONDS]
+    if len(attempts) >= LOGIN_THROTTLE_MAX_ATTEMPTS:
+        raise HTTPException(status_code=429, detail="Too many login attempts")
+    attempts.append(now)
+    login_attempts[client_host] = attempts
+
+
+@app.post("/api/auth/signup")
+async def signup(payload: AuthPayload, db: Session = Depends(get_db)):
+    existing = db.execute(
+        select(User).where(User.email == payload.email.lower())
+    ).scalar_one_or_none()
+    if existing:
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    user = User(email=payload.email.lower(), password_hash=hash_password(payload.password))
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    ensure_user_defaults(db, user)
+
+    token = create_access_token(user)
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user": serialize_user(user),
+    }
+
+
+@app.post("/api/auth/login")
+async def login(payload: AuthPayload, request: Request, db: Session = Depends(get_db)):
+    throttle_login(request)
+    user = db.execute(
+        select(User).where(User.email == payload.email.lower())
+    ).scalar_one_or_none()
+    if not user or not verify_password(payload.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    ensure_user_defaults(db, user)
+
+    token = create_access_token(user)
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user": serialize_user(user),
+    }
+
+
+@app.get("/api/auth/me")
+async def me(current_user: User = Depends(get_current_user)):
+    return {"user": serialize_user(current_user)}
+
+
 @app.post("/api/notes")
-async def create_note(payload: NoteCreate, db: Session = Depends(get_db)):
+async def create_note(
+    payload: NoteCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     if payload.notebook_id:
-        notebook = db.get(Notebook, payload.notebook_id)
+        notebook = db.execute(
+            select(Notebook).where(
+                Notebook.id == payload.notebook_id,
+                Notebook.user_id == current_user.id,
+            )
+        ).scalar_one_or_none()
         if not notebook:
             raise HTTPException(status_code=404, detail="Notebook not found")
     else:
-        notebook = get_or_create_default_notebook(db)
+        subject = get_or_create_default_subject(db, current_user)
+        notebook = get_or_create_default_notebook(db, current_user, subject)
 
     now = datetime.datetime.utcnow()
     note = Note(
@@ -111,6 +320,7 @@ async def create_note(payload: NoteCreate, db: Session = Depends(get_db)):
         created_at=now,
         updated_at=now,
         notebook=notebook,
+        user=current_user,
     )
     db.add(note)
     db.commit()
@@ -128,9 +338,14 @@ async def create_note(payload: NoteCreate, db: Session = Depends(get_db)):
 
 @app.post("/api/notes/{note_id}/strokes")
 async def add_strokes(
-    note_id: int, payload: StrokePayload, db: Session = Depends(get_db)
+    note_id: int,
+    payload: StrokePayload,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    note = db.get(Note, note_id)
+    note = db.execute(
+        select(Note).where(Note.id == note_id, Note.user_id == current_user.id)
+    ).scalar_one_or_none()
     if not note:
         raise HTTPException(status_code=404, detail="Note not found")
 
@@ -152,9 +367,14 @@ async def add_strokes(
 
 @app.post("/api/notes/{note_id}/upload")
 async def upload_note_file(
-    note_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)
+    note_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    note = db.get(Note, note_id)
+    note = db.execute(
+        select(Note).where(Note.id == note_id, Note.user_id == current_user.id)
+    ).scalar_one_or_none()
     if not note:
         raise HTTPException(status_code=404, detail="Note not found")
 
@@ -193,31 +413,108 @@ async def upload_note_file(
 
 
 @app.get("/api/library")
-async def get_library(db: Session = Depends(get_db)):
-    notebooks = db.execute(select(Notebook)).scalars().all()
-    response = []
-    for notebook in notebooks:
-        response.append(
+async def get_library(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    ensure_user_defaults(db, current_user)
+    subjects = (
+        db.execute(select(Subject).where(Subject.user_id == current_user.id))
+        .scalars()
+        .all()
+    )
+    subject_response = [
+        {
+            "id": subject.id,
+            "name": subject.name,
+            "notebook_count": len(subject.notebooks),
+        }
+        for subject in subjects
+    ]
+
+    notebooks = (
+        db.execute(select(Notebook).where(Notebook.user_id == current_user.id))
+        .scalars()
+        .all()
+    )
+    notebook_response = [
+        {
+            "id": notebook.id,
+            "name": notebook.name,
+            "color": notebook.color,
+            "icon": notebook.icon,
+            "note_count": len(notebook.notes),
+        }
+        for notebook in notebooks
+    ]
+
+    return {"subjects": subject_response, "notebooks": notebook_response}
+
+
+@app.get("/api/subjects/{subject_id}/notebooks")
+async def get_subject_notebooks(
+    subject_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    subject = db.execute(
+        select(Subject).where(
+            Subject.id == subject_id,
+            Subject.user_id == current_user.id,
+        )
+    ).scalar_one_or_none()
+    if not subject:
+        raise HTTPException(status_code=404, detail="Subject not found")
+
+    notebooks = (
+        db.execute(
+            select(Notebook).where(
+                Notebook.subject_id == subject_id,
+                Notebook.user_id == current_user.id,
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    return {
+        "subject": {"id": subject.id, "name": subject.name},
+        "notebooks": [
             {
                 "id": notebook.id,
                 "name": notebook.name,
                 "color": notebook.color,
                 "icon": notebook.icon,
                 "note_count": len(notebook.notes),
+                "updated_at": notebook.created_at.isoformat(),
             }
-        )
-
-    return {"notebooks": response}
+            for notebook in notebooks
+        ],
+    }
 
 
 @app.get("/api/notebooks/{notebook_id}/notes")
-async def get_notebook_notes(notebook_id: int, db: Session = Depends(get_db)):
-    notebook = db.get(Notebook, notebook_id)
+async def get_notebook_notes(
+    notebook_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    notebook = db.execute(
+        select(Notebook).where(
+            Notebook.id == notebook_id,
+            Notebook.user_id == current_user.id,
+        )
+    ).scalar_one_or_none()
     if not notebook:
         raise HTTPException(status_code=404, detail="Notebook not found")
 
     notes = (
-        db.execute(select(Note).where(Note.notebook_id == notebook_id))
+        db.execute(
+            select(Note).where(
+                Note.notebook_id == notebook_id,
+                Note.user_id == current_user.id,
+            )
+        )
         .scalars()
         .all()
     )
@@ -234,8 +531,14 @@ async def get_notebook_notes(notebook_id: int, db: Session = Depends(get_db)):
 
 
 @app.get("/api/notes/{note_id}")
-async def get_note(note_id: int, db: Session = Depends(get_db)):
-    note = db.get(Note, note_id)
+async def get_note(
+    note_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    note = db.execute(
+        select(Note).where(Note.id == note_id, Note.user_id == current_user.id)
+    ).scalar_one_or_none()
     if not note:
         raise HTTPException(status_code=404, detail="Note not found")
 
@@ -253,6 +556,12 @@ async def get_note(note_id: int, db: Session = Depends(get_db)):
         "id": note.id,
         "title": note.title,
         "summary": note.summary,
+        "subject": {
+            "id": note.notebook.subject.id if note.notebook and note.notebook.subject else None,
+            "name": note.notebook.subject.name
+            if note.notebook and note.notebook.subject
+            else None,
+        },
         "notebook": {
             "id": note.notebook.id if note.notebook else None,
             "name": note.notebook.name if note.notebook else "Unsorted",
@@ -267,8 +576,14 @@ async def get_note(note_id: int, db: Session = Depends(get_db)):
 
 
 @app.get("/api/notes/{note_id}/strokes")
-async def get_note_strokes(note_id: int, db: Session = Depends(get_db)):
-    note = db.get(Note, note_id)
+async def get_note_strokes(
+    note_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    note = db.execute(
+        select(Note).where(Note.id == note_id, Note.user_id == current_user.id)
+    ).scalar_one_or_none()
     if not note:
         raise HTTPException(status_code=404, detail="Note not found")
 
@@ -286,8 +601,14 @@ async def get_note_strokes(note_id: int, db: Session = Depends(get_db)):
 
 
 @app.get("/api/notes/{note_id}/file")
-async def get_note_file(note_id: int, db: Session = Depends(get_db)):
-    note = db.get(Note, note_id)
+async def get_note_file(
+    note_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    note = db.execute(
+        select(Note).where(Note.id == note_id, Note.user_id == current_user.id)
+    ).scalar_one_or_none()
     if not note:
         raise HTTPException(status_code=404, detail="Note not found")
 
@@ -324,8 +645,14 @@ async def get_note_file(note_id: int, db: Session = Depends(get_db)):
 
 
 @app.post("/api/notes/{note_id}/summarize")
-async def summarize_note(note_id: int, db: Session = Depends(get_db)):
-    note = db.get(Note, note_id)
+async def summarize_note(
+    note_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    note = db.execute(
+        select(Note).where(Note.id == note_id, Note.user_id == current_user.id)
+    ).scalar_one_or_none()
     if not note:
         raise HTTPException(status_code=404, detail="Note not found")
 
@@ -338,9 +665,14 @@ async def summarize_note(note_id: int, db: Session = Depends(get_db)):
 
 @app.post("/api/notes/{note_id}/flashcards")
 async def generate_flashcards(
-    note_id: int, payload: FlashcardPayload, db: Session = Depends(get_db)
+    note_id: int,
+    payload: FlashcardPayload,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    note = db.get(Note, note_id)
+    note = db.execute(
+        select(Note).where(Note.id == note_id, Note.user_id == current_user.id)
+    ).scalar_one_or_none()
     if not note:
         raise HTTPException(status_code=404, detail="Note not found")
 
