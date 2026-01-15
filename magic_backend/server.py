@@ -1,19 +1,22 @@
 import datetime
 import json
+import logging
+import math
 import os
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import bcrypt
 import jwt
-from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from PIL import Image, ImageDraw
 from pydantic import BaseModel
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from models import Base, Flashcard, Note, NoteFile, NoteStroke, Notebook, Subject, User
+from models import AIJob, Base, Flashcard, Note, NoteFile, NoteStroke, Notebook, Subject, User
 from settings import (
     CORS_ORIGINS,
     CORS_ORIGIN_REGEX,
@@ -46,6 +49,11 @@ if os.getenv("ENV", "dev") != "prod":
 
 if STORAGE_BACKEND == "local":
     os.makedirs(STORAGE_DIR, exist_ok=True)
+OCR_IMAGE_DIR = os.path.join(STORAGE_DIR, "ocr")
+os.makedirs(OCR_IMAGE_DIR, exist_ok=True)
+OCR_ENGINE = "paddleocr"
+
+logger = logging.getLogger(__name__)
 
 # ------------------------------------------------------------------
 # App setup
@@ -130,6 +138,187 @@ def get_current_user(
         raise HTTPException(status_code=401, detail="User not found")
 
     return user
+
+
+def serialize_ai_job(job: AIJob) -> Dict[str, Any]:
+    return {
+        "id": job.id,
+        "note_id": job.note_id,
+        "type": job.job_type,
+        "status": job.status,
+        "error": job.error,
+        "created_at": job.created_at.isoformat() if job.created_at else None,
+        "updated_at": job.updated_at.isoformat() if job.updated_at else None,
+        "started_at": job.started_at.isoformat() if job.started_at else None,
+        "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+    }
+
+
+def _iter_stroke_points(stroke: Dict[str, Any]) -> Iterable[Tuple[float, float]]:
+    candidates = stroke.get("points") or stroke.get("path") or stroke.get("segments")
+    if isinstance(stroke.get("x"), list) and isinstance(stroke.get("y"), list):
+        candidates = list(zip(stroke.get("x"), stroke.get("y")))
+    if not candidates:
+        return []
+    points: List[Tuple[float, float]] = []
+    for point in candidates:
+        if isinstance(point, dict):
+            x = point.get("x")
+            y = point.get("y")
+        elif isinstance(point, (list, tuple)) and len(point) >= 2:
+            x, y = point[0], point[1]
+        else:
+            continue
+        if x is None or y is None:
+            continue
+        points.append((float(x), float(y)))
+    return points
+
+
+def _stroke_width(stroke: Dict[str, Any]) -> int:
+    for key in ("width", "stroke_width", "strokeWidth", "lineWidth", "size"):
+        value = stroke.get(key)
+        if value:
+            try:
+                return max(1, int(round(float(value))))
+            except (TypeError, ValueError):
+                continue
+    return 2
+
+
+def render_note_strokes_to_png(note: Note, job_id: int) -> str:
+    strokes_sorted = sorted(note.strokes, key=lambda item: (item.created_at, item.id))
+    stroke_sets: List[Tuple[List[Tuple[float, float]], int]] = []
+    min_x = min_y = None
+    max_x = max_y = None
+    for stroke_entry in strokes_sorted:
+        try:
+            payload = json.loads(stroke_entry.payload)
+        except json.JSONDecodeError:
+            continue
+        for stroke in payload.get("strokes", []):
+            points = list(_iter_stroke_points(stroke))
+            if not points:
+                continue
+            stroke_sets.append((points, _stroke_width(stroke)))
+            for x, y in points:
+                min_x = x if min_x is None else min(min_x, x)
+                min_y = y if min_y is None else min(min_y, y)
+                max_x = x if max_x is None else max(max_x, x)
+                max_y = y if max_y is None else max(max_y, y)
+
+    if min_x is None or min_y is None or max_x is None or max_y is None:
+        raise ValueError("No stroke data available to render.")
+
+    padding = 20
+    width = max(1, int(math.ceil(max_x - min_x + padding * 2)))
+    height = max(1, int(math.ceil(max_y - min_y + padding * 2)))
+    image = Image.new("RGB", (width, height), color="white")
+    draw = ImageDraw.Draw(image)
+
+    for points, stroke_width in stroke_sets:
+        translated = [
+            (x - min_x + padding, y - min_y + padding)
+            for x, y in points
+        ]
+        if len(translated) == 1:
+            x, y = translated[0]
+            radius = max(1, stroke_width)
+            draw.ellipse(
+                (x - radius, y - radius, x + radius, y + radius),
+                fill="black",
+                outline="black",
+            )
+        else:
+            draw.line(translated, fill="black", width=stroke_width, joint="curve")
+
+    note_dir = os.path.join(OCR_IMAGE_DIR, f"note_{note.id}")
+    os.makedirs(note_dir, exist_ok=True)
+    image_path = os.path.join(note_dir, f"{job_id}.png")
+    image.save(image_path, format="PNG")
+    return image_path
+
+
+def run_paddleocr(image_path: str) -> Tuple[str, Optional[float]]:
+    from paddleocr import PaddleOCR
+
+    ocr = PaddleOCR(use_angle_cls=True, lang="en")
+    result = ocr.ocr(image_path, cls=True)
+    if not result:
+        return "", None
+
+    lines: List[str] = []
+    confidences: List[float] = []
+    for page in result:
+        for entry in page:
+            if not entry or len(entry) < 2:
+                continue
+            text_info = entry[1]
+            if not isinstance(text_info, (list, tuple)) or len(text_info) < 2:
+                continue
+            text, confidence = text_info[0], text_info[1]
+            if text:
+                lines.append(str(text))
+            if confidence is not None:
+                try:
+                    confidences.append(float(confidence))
+                except (TypeError, ValueError):
+                    continue
+
+    if not lines:
+        return "", None
+
+    avg_confidence = None
+    if confidences:
+        avg_confidence = sum(confidences) / len(confidences)
+    return "\n".join(lines).strip(), avg_confidence
+
+
+def run_ocr_job(job_id: int) -> None:
+    db = SessionLocal()
+    try:
+        job = db.get(AIJob, job_id)
+        if not job:
+            return
+        if job.status not in {"queued", "running"}:
+            return
+        now = datetime.datetime.utcnow()
+        job.status = "running"
+        job.started_at = now
+        job.updated_at = now
+        db.commit()
+
+        note = db.execute(
+            select(Note)
+            .join(Notebook)
+            .where(Note.id == job.note_id, Notebook.user_id == job.user_id)
+        ).scalar_one_or_none()
+        if not note:
+            raise ValueError("Note not found for OCR job.")
+
+        image_path = render_note_strokes_to_png(note, job.id)
+        text, confidence = run_paddleocr(image_path)
+        now = datetime.datetime.utcnow()
+        note.ocr_text = text or ""
+        note.ocr_engine = OCR_ENGINE
+        note.ocr_confidence = confidence
+        note.ocr_updated_at = now
+        job.status = "succeeded"
+        job.finished_at = now
+        job.updated_at = now
+        db.commit()
+    except Exception as exc:  # noqa: BLE001 - preserve job failure detail
+        now = datetime.datetime.utcnow()
+        job = db.get(AIJob, job_id)
+        if job:
+            job.status = "failed"
+            job.error = str(exc)
+            job.finished_at = now
+            job.updated_at = now
+            db.commit()
+        logger.exception("OCR job %s failed", job_id)
+    finally:
+        db.close()
 
 
 # ------------------------------------------------------------------
@@ -792,6 +981,10 @@ async def get_note(
         "id": note.id,
         "title": note.title,
         "summary": note.summary,
+        "ocr_text": note.ocr_text,
+        "ocr_engine": note.ocr_engine,
+        "ocr_confidence": note.ocr_confidence,
+        "ocr_updated_at": note.ocr_updated_at.isoformat() if note.ocr_updated_at else None,
         "subject": {
             "id": note.notebook.subject.id if note.notebook and note.notebook.subject else None,
             "name": note.notebook.subject.name
@@ -808,4 +1001,73 @@ async def get_note(
             {"question": card.question, "answer": card.answer}
             for card in note.flashcards
         ],
+    }
+
+
+@app.post("/api/notes/{note_id}/ocr/enqueue")
+async def enqueue_ocr(
+    note_id: int,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    note = owned_note(db, note_id, current_user.id)
+    if not note:
+        raise HTTPException(status_code=404, detail="Note not found")
+
+    existing_job = db.execute(
+        select(AIJob).where(
+            AIJob.note_id == note.id,
+            AIJob.user_id == current_user.id,
+            AIJob.job_type == "ocr",
+            AIJob.status.in_(["queued", "running"]),
+        )
+    ).scalar_one_or_none()
+    if existing_job:
+        return {"job": serialize_ai_job(existing_job)}
+
+    now = datetime.datetime.utcnow()
+    job = AIJob(
+        note_id=note.id,
+        user_id=current_user.id,
+        job_type="ocr",
+        status="queued",
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+
+    background_tasks.add_task(run_ocr_job, job.id)
+    return {"job": serialize_ai_job(job)}
+
+
+@app.get("/api/notes/{note_id}/ocr")
+async def get_note_ocr(
+    note_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    note = owned_note(db, note_id, current_user.id)
+    if not note:
+        raise HTTPException(status_code=404, detail="Note not found")
+
+    latest_job = db.execute(
+        select(AIJob)
+        .where(
+            AIJob.note_id == note.id,
+            AIJob.user_id == current_user.id,
+            AIJob.job_type == "ocr",
+        )
+        .order_by(AIJob.created_at.desc())
+    ).scalar_one_or_none()
+
+    return {
+        "note_id": note.id,
+        "ocr_text": note.ocr_text,
+        "ocr_engine": note.ocr_engine,
+        "ocr_confidence": note.ocr_confidence,
+        "ocr_updated_at": note.ocr_updated_at.isoformat() if note.ocr_updated_at else None,
+        "job": serialize_ai_job(latest_job) if latest_job else None,
     }

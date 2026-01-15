@@ -1,6 +1,6 @@
 import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import declarative_base, relationship
 
 Base = declarative_base()
@@ -16,6 +16,7 @@ class User(Base):
 
     subjects = relationship("Subject", back_populates="user", cascade="all, delete-orphan")
     notebooks = relationship("Notebook", back_populates="user", cascade="all, delete-orphan")
+    ai_jobs = relationship("AIJob", back_populates="user", cascade="all, delete-orphan")
 
 
 class Subject(Base):
@@ -59,11 +60,16 @@ class Note(Base):
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow)
     summary = Column(Text, default="")
+    ocr_text = Column(Text, default="")
+    ocr_engine = Column(String, default="")
+    ocr_confidence = Column(Float, nullable=True)
+    ocr_updated_at = Column(DateTime, nullable=True)
     notebook_id = Column(Integer, ForeignKey("notebooks.id", ondelete="CASCADE"), nullable=False)
     notebook = relationship("Notebook", back_populates="notes")
     strokes = relationship("NoteStroke", back_populates="note", cascade="all, delete-orphan")
     files = relationship("NoteFile", back_populates="note", cascade="all, delete-orphan")
     flashcards = relationship("Flashcard", back_populates="note", cascade="all, delete-orphan")
+    ai_jobs = relationship("AIJob", back_populates="note", cascade="all, delete-orphan")
 
 
 class NoteStroke(Base):
@@ -100,3 +106,21 @@ class Flashcard(Base):
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
     note = relationship("Note", back_populates="flashcards")
+
+
+class AIJob(Base):
+    __tablename__ = "ai_jobs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    note_id = Column(Integer, ForeignKey("notes.id", ondelete="CASCADE"), nullable=False)
+    job_type = Column(String, nullable=False)
+    status = Column(String, nullable=False)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+
+    user = relationship("User", back_populates="ai_jobs")
+    note = relationship("Note", back_populates="ai_jobs")
