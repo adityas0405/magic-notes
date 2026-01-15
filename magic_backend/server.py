@@ -16,7 +16,7 @@ from pydantic import BaseModel
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from models import AIJob, Base, Flashcard, Note, NoteFile, NoteStroke, Notebook, Subject, User
+from models import AIJob, Flashcard, Note, NoteFile, NoteStroke, Notebook, Subject, User
 from settings import (
     CORS_ORIGINS,
     CORS_ORIGIN_REGEX,
@@ -42,10 +42,6 @@ if DATABASE_URL.startswith("postgres://"):
 
 engine = create_engine(DATABASE_URL, connect_args=connect_args, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-# Never auto-create schema in prod
-if os.getenv("ENV", "dev") != "prod":
-    Base.metadata.create_all(bind=engine)
 
 if STORAGE_BACKEND == "local":
     os.makedirs(STORAGE_DIR, exist_ok=True)

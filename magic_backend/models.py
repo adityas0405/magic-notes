@@ -40,7 +40,7 @@ class Notebook(Base):
     name = Column(String, nullable=False)
     color = Column(String, default="#14b8a6")
     icon = Column(String, default="Atom")
-    is_inbox = Column(Boolean, default=False)
+    is_inbox = Column(Boolean, default=False, nullable=False)
     inbox_type = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
