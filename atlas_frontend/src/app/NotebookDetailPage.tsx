@@ -3,11 +3,71 @@ import { Link, useParams } from "react-router-dom";
 import { getApiErrorMessage } from "../lib/api";
 import {
   useCreateNote,
+  useEnqueueNoteOcr,
   useNoteDetail,
+  useNoteStrokes,
   useNotebookNotes,
   useSubjectNotebooks,
   useUpdateNotebook,
 } from "../lib/queries";
+
+type StrokePoint = {
+  x: number;
+  y: number;
+};
+
+type StrokeSet = {
+  points: StrokePoint[];
+  width: number;
+};
+
+const parseStrokePoints = (stroke: Record<string, unknown>): StrokePoint[] => {
+  const pointSets =
+    (stroke.points as unknown[]) ||
+    (stroke.path as unknown[]) ||
+    (stroke.segments as unknown[]);
+  let points: unknown[] | undefined = pointSets;
+
+  if (Array.isArray(stroke.x) && Array.isArray(stroke.y)) {
+    points = (stroke.x as unknown[]).map((x, index) => [x, (stroke.y as unknown[])[index]]);
+  }
+
+  if (!points) {
+    return [];
+  }
+
+  const parsed: StrokePoint[] = [];
+  for (const point of points) {
+    if (Array.isArray(point) && point.length >= 2) {
+      const [x, y] = point;
+      if (typeof x === "number" && typeof y === "number") {
+        parsed.push({ x, y });
+      }
+      continue;
+    }
+    if (point && typeof point === "object") {
+      const { x, y } = point as { x?: unknown; y?: unknown };
+      if (typeof x === "number" && typeof y === "number") {
+        parsed.push({ x, y });
+      }
+    }
+  }
+  return parsed;
+};
+
+const getStrokeWidth = (stroke: Record<string, unknown>) => {
+  const widthKeys = ["width", "stroke_width", "strokeWidth", "lineWidth", "size"];
+  for (const key of widthKeys) {
+    const value = stroke[key] as number | string | undefined;
+    if (value !== undefined && value !== null) {
+      const parsed = Number(value);
+      if (!Number.isNaN(parsed)) {
+        return Math.max(1, Math.round(parsed));
+      }
+    }
+  }
+  return 2;
+};
 
 const NotebookDetailPage = () => {
   const { subjectId, notebookId } = useParams();
@@ -17,12 +77,16 @@ const NotebookDetailPage = () => {
   const { data: noteDetail, isLoading: isNoteLoading } = useNoteDetail(
     selectedNoteId ?? undefined
   );
+  const { data: noteStrokes, isLoading: isStrokesLoading } = useNoteStrokes(
+    selectedNoteId ?? undefined
+  );
   const [tab, setTab] = useState<"flashcards" | "summary">("flashcards");
   const [cardIndex, setCardIndex] = useState(0);
   const [viewMode, setViewMode] = useState<"handwriting" | "digitized">("handwriting");
   const [isRenamingNotebook, setIsRenamingNotebook] = useState(false);
   const [notebookNameInput, setNotebookNameInput] = useState("");
   const [noteActionError, setNoteActionError] = useState<string | null>(null);
+  const enqueueOcr = useEnqueueNoteOcr(selectedNoteId ?? undefined);
 
   const notebookIdNumber = notebookId ? Number(notebookId) : undefined;
   const updateNotebook = useUpdateNotebook(notebookIdNumber, subjectId ? Number(subjectId) : undefined);
@@ -39,6 +103,44 @@ const NotebookDetailPage = () => {
     setCardIndex(0);
   }, [notebookId]);
 
+  const strokeSets = useMemo<StrokeSet[]>(() => {
+    if (!noteStrokes) {
+      return [];
+    }
+    const sets: StrokeSet[] = [];
+    for (const entry of noteStrokes) {
+      const payload = entry.payload as { strokes?: Record<string, unknown>[] } | undefined;
+      const strokes = payload?.strokes ?? [];
+      for (const stroke of strokes) {
+        const points = parseStrokePoints(stroke);
+        if (!points.length) {
+          continue;
+        }
+        sets.push({ points, width: getStrokeWidth(stroke) });
+      }
+    }
+    return sets;
+  }, [noteStrokes]);
+
+  const strokeBounds = useMemo(() => {
+    let minX: number | null = null;
+    let minY: number | null = null;
+    let maxX: number | null = null;
+    let maxY: number | null = null;
+    for (const set of strokeSets) {
+      for (const point of set.points) {
+        minX = minX === null ? point.x : Math.min(minX, point.x);
+        minY = minY === null ? point.y : Math.min(minY, point.y);
+        maxX = maxX === null ? point.x : Math.max(maxX, point.x);
+        maxY = maxY === null ? point.y : Math.max(maxY, point.y);
+      }
+    }
+    if (minX === null || minY === null || maxX === null || maxY === null) {
+      return null;
+    }
+    return { minX, minY, maxX, maxY };
+  }, [strokeSets]);
+
   const cards = noteDetail?.cards ?? [];
   const card = cards[cardIndex];
   const noteTitle = noteDetail?.title ?? "Select a note";
@@ -47,10 +149,15 @@ const NotebookDetailPage = () => {
     subjectData?.notebooks.find((notebook) => notebook.id === notebookIdNumber)
       ?.name ?? noteDetail?.notebook.name ?? "Notebook";
   const hasNotes = Boolean(notes?.length);
-  const hasFile = Boolean(noteDetail?.file_url);
-  const fileLabel = hasFile ? "View latest upload" : "No handwriting upload yet";
   const summaryText =
     noteDetail?.summary || "Summaries will appear once processing completes.";
+  const hasOcrText = Boolean(noteDetail?.ocr_text?.trim());
+
+  useEffect(() => {
+    if (!hasOcrText && viewMode === "digitized") {
+      setViewMode("handwriting");
+    }
+  }, [hasOcrText, viewMode]);
 
   const breadcrumb = useMemo(
     () => (
@@ -141,15 +248,31 @@ const NotebookDetailPage = () => {
           >
             Original Handwriting
           </button>
-          <button
-            className={`rounded-lg px-4 py-2 text-xs ${
-              viewMode === "digitized" ? "bg-white font-medium" : "text-muted"
-            }`}
-            onClick={() => setViewMode("digitized")}
-          >
-            Digitized Text
-          </button>
+          {hasOcrText ? (
+            <button
+              className={`rounded-lg px-4 py-2 text-xs ${
+                viewMode === "digitized" ? "bg-white font-medium" : "text-muted"
+              }`}
+              onClick={() => setViewMode("digitized")}
+            >
+              Digitized Text
+            </button>
+          ) : (
+            <button
+              className="rounded-lg bg-primary px-4 py-2 text-xs font-medium text-white"
+              onClick={() => enqueueOcr.mutate()}
+              disabled={!selectedNoteId || enqueueOcr.isPending}
+              type="button"
+            >
+              {enqueueOcr.isPending ? "Enqueueing…" : "Enqueue OCR"}
+            </button>
+          )}
         </div>
+        {enqueueOcr.isError ? (
+          <p className="text-xs text-red-500">
+            {getApiErrorMessage(enqueueOcr.error, "Unable to enqueue OCR.")}
+          </p>
+        ) : null}
       </div>
 
       <div className="grid gap-6 lg:grid-cols-[280px_1fr_320px]">
@@ -217,28 +340,49 @@ const NotebookDetailPage = () => {
         </div>
 
         <div className="rounded-2xl border border-border bg-surface p-8 shadow-card">
-          {isNoteLoading ? (
+          {isNoteLoading || isStrokesLoading ? (
             <div className="flex h-64 items-center justify-center rounded-xl border border-dashed border-border bg-base text-sm text-muted">
-              Loading note…
+              Loading handwriting…
             </div>
           ) : viewMode === "handwriting" ? (
-            <div className="flex h-64 flex-col items-center justify-center rounded-xl border border-dashed border-border bg-base text-sm text-muted">
-              <p>{fileLabel}</p>
-              {hasFile ? (
-                <a
-                  className="mt-2 text-xs text-primary underline"
-                  href={noteDetail?.file_url}
-                  target="_blank"
-                  rel="noreferrer"
+            strokeSets.length ? (
+              <div className="flex h-64 items-center justify-center rounded-xl border border-dashed border-border bg-base">
+                <svg
+                  className="h-full w-full"
+                  viewBox={
+                    strokeBounds
+                      ? `${strokeBounds.minX - 20} ${strokeBounds.minY - 20} ${
+                          Math.max(1, strokeBounds.maxX - strokeBounds.minX + 40)
+                        } ${Math.max(1, strokeBounds.maxY - strokeBounds.minY + 40)}`
+                      : "0 0 1 1"
+                  }
                 >
-                  Open file
-                </a>
-              ) : null}
-            </div>
+                  {strokeSets.map((stroke, index) => (
+                    <path
+                      key={`${stroke.points.length}-${index}`}
+                      d={stroke.points
+                        .map((point, pointIndex) =>
+                          `${pointIndex === 0 ? "M" : "L"} ${point.x} ${point.y}`
+                        )
+                        .join(" ")}
+                      fill="none"
+                      stroke="black"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={stroke.width}
+                    />
+                  ))}
+                </svg>
+              </div>
+            ) : (
+              <div className="flex h-64 flex-col items-center justify-center rounded-xl border border-dashed border-border bg-base text-sm text-muted">
+                <p>No handwriting upload yet</p>
+              </div>
+            )
           ) : (
             <div className="space-y-3 text-sm text-text">
-              <h3 className="text-sm font-semibold">Digitized Summary</h3>
-              <p className="text-xs text-muted">{summaryText}</p>
+              <h3 className="text-sm font-semibold">Digitized Text</h3>
+              <p className="text-xs text-muted">{noteDetail?.ocr_text}</p>
             </div>
           )}
         </div>

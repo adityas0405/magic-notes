@@ -63,6 +63,10 @@ export type NoteDetail = {
   id: number;
   title: string;
   summary: string;
+  ocr_text: string;
+  ocr_engine: string;
+  ocr_confidence: number | null;
+  ocr_updated_at: string | null;
   subject: {
     id: number | null;
     name: string | null;
@@ -79,6 +83,25 @@ export type NoteDetail = {
 export type NoteMutation = {
   id: number;
   title: string;
+};
+
+export type NoteStroke = {
+  id: number;
+  note_id: number;
+  payload: Record<string, unknown>;
+  created_at: string;
+};
+
+export type AiJob = {
+  id: number;
+  note_id: number;
+  type: string;
+  status: string;
+  error?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
 };
 
 export class ApiError extends Error {
@@ -193,6 +216,16 @@ export const createNote = async (payload: {
   return apiFetch<NoteMutation>("/api/notes", {
     method: "POST",
     body: JSON.stringify(payload),
+  });
+};
+
+export const fetchNoteStrokes = async (noteId: number) => {
+  return apiFetch<NoteStroke[]>(`/api/notes/${noteId}/strokes`);
+};
+
+export const enqueueNoteOcr = async (noteId: number) => {
+  return apiFetch<{ job: AiJob }>(`/api/notes/${noteId}/ocr/enqueue`, {
+    method: "POST",
   });
 };
 

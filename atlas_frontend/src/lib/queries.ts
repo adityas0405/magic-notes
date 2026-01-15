@@ -7,6 +7,8 @@ import {
   createSubject,
   deleteNotebook,
   deleteSubject,
+  enqueueNoteOcr,
+  fetchNoteStrokes,
   LibraryResponse,
   NoteMutation,
   NoteDetail,
@@ -44,6 +46,19 @@ export const useNoteDetail = (noteId?: number) => {
   return useQuery({
     queryKey: ["notes", noteId],
     queryFn: () => apiFetch<NoteDetail>(`/api/notes/${noteId}`),
+    enabled: Boolean(noteId),
+  });
+};
+
+export const useNoteStrokes = (noteId?: number) => {
+  return useQuery({
+    queryKey: ["notes", noteId, "strokes"],
+    queryFn: () => {
+      if (!noteId) {
+        throw new Error("Note id is required");
+      }
+      return fetchNoteStrokes(noteId);
+    },
     enabled: Boolean(noteId),
   });
 };
@@ -169,6 +184,24 @@ export const useCreateNote = () => {
         });
       }
       void queryClient.invalidateQueries({ queryKey: ["notes", note.id] });
+      void queryClient.invalidateQueries({ queryKey: ["notes", note.id, "strokes"] });
+    },
+  });
+};
+
+export const useEnqueueNoteOcr = (noteId?: number) => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => {
+      if (!noteId) {
+        throw new Error("Note id is required");
+      }
+      return enqueueNoteOcr(noteId);
+    },
+    onSuccess: () => {
+      if (noteId) {
+        void queryClient.invalidateQueries({ queryKey: ["notes", noteId] });
+      }
     },
   });
 };
