@@ -24,6 +24,45 @@ uvicorn server:app --host 0.0.0.0 --port $PORT
 
 For Railway/Fly, you can also use the included `Procfile`.
 
+## Database migrations (Alembic)
+
+Alembic is the source of truth for schema changes. Run commands from
+`magic_backend/` and ensure `DATABASE_URL` is set before running any commands.
+
+Create a new revision:
+
+```
+alembic revision -m "describe change"
+```
+
+Apply migrations locally:
+
+```
+alembic upgrade head
+```
+
+Check the current revision:
+
+```
+alembic current
+```
+
+Run migrations on Fly.io (pick one):
+
+- One-off command:
+
+  ```
+  fly ssh console -C "cd /app && alembic upgrade head"
+  ```
+
+- Interactive console:
+
+  ```
+  fly ssh console
+  cd /app
+  alembic upgrade head
+  ```
+
 ## Health Check
 
 ```
