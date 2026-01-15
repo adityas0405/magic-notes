@@ -1,8 +1,10 @@
 import datetime
+import importlib.util
 import json
 import logging
 import math
 import os
+import tempfile
 import threading
 import uuid
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -12,8 +14,12 @@ import jwt
 from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from PIL import Image, ImageDraw
 from pydantic import BaseModel
+
+if importlib.util.find_spec("paddleocr") is None:
+    PaddleOCR = None
+else:
+    from paddleocr import PaddleOCR
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -199,6 +205,8 @@ def _stroke_width(stroke: Dict[str, Any]) -> int:
 
 
 def render_note_strokes_to_png(note: Note, job_id: int) -> str:
+    from PIL import Image, ImageDraw
+
     strokes_sorted = sorted(note.strokes, key=lambda item: (item.created_at, item.id))
     stroke_sets: List[Tuple[List[Tuple[float, float]], int]] = []
     min_x = min_y = None
@@ -286,13 +294,55 @@ def run_paddleocr(image_path: str) -> Tuple[str, Optional[float]]:
 
 def get_ocr():
     global _OCR
-    if _OCR is None:
-        with _OCR_LOCK:
-            if _OCR is None:
-                from paddleocr import PaddleOCR
-
+    if PaddleOCR is None:
+        raise RuntimeError("PaddleOCR is not available in this environment.")
+    if _OCR is not None:
+        return _OCR
+    with _OCR_LOCK:
+        if _OCR is None:
+            try:
                 _OCR = PaddleOCR(use_angle_cls=True, lang="en")
+                logger.info("OCR engine initialized.")
+            except RuntimeError as exc:
+                if "PDX has already been initialized" in str(exc):
+                    if _OCR is not None:
+                        logger.warning(
+                            "PaddleX already initialized; reusing existing OCR instance."
+                        )
+                        return _OCR
+                raise
     return _OCR
+
+
+def verify_ocr_reuse() -> None:
+    """Run two OCR passes in the same process to verify reuse."""
+    if PaddleOCR is None:
+        logger.warning("PaddleOCR not available; skipping OCR reuse verification.")
+        return
+    if importlib.util.find_spec("PIL") is None:
+        logger.warning("Pillow not available; skipping OCR reuse verification.")
+        return
+    from PIL import Image
+
+    tmp_dir = tempfile.mkdtemp(prefix="ocr_verify_")
+    image_path = os.path.join(tmp_dir, "verify.png")
+    try:
+        image = Image.new("RGB", (16, 16), color="white")
+        image.save(image_path, format="PNG")
+        logger.info("Starting OCR verification run 1.")
+        run_paddleocr(image_path)
+        logger.info("Starting OCR verification run 2.")
+        run_paddleocr(image_path)
+        logger.info("OCR verification completed.")
+    finally:
+        try:
+            os.remove(image_path)
+        except FileNotFoundError:
+            pass
+        try:
+            os.rmdir(tmp_dir)
+        except OSError:
+            pass
 
 
 def run_ocr_job(job_id: int) -> None:
