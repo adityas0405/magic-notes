@@ -1,19 +1,16 @@
 import datetime
 import json
-import logging
 import os
-import time
 import uuid
 from typing import Any, Dict, List, Optional
 
 import bcrypt
 import jwt
-from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from models import Base, Flashcard, Note, NoteFile, NoteStroke, Notebook, Subject, User
@@ -55,7 +52,6 @@ if STORAGE_BACKEND == "local":
 # ------------------------------------------------------------------
 
 app = FastAPI()
-logger = logging.getLogger(__name__)
 
 app.add_middleware(
     CORSMiddleware,
@@ -71,63 +67,13 @@ app.add_middleware(
 
 security = HTTPBearer(auto_error=False)
 
+
 def get_db():
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
-
-def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
-
-def verify_password(password: str, password_hash: str) -> bool:
-    return bcrypt.checkpw(password.encode(), password_hash.encode())
-
-def create_access_token(user: User) -> str:
-    now = datetime.datetime.utcnow()
-    payload = {
-        "user_id": user.id,
-        "email": user.email,
-        "iat": int(now.timestamp()),
-        "exp": int((now + datetime.timedelta(seconds=JWT_EXPIRES_SECONDS)).timestamp()),
-    }
-    return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
-
-def serialize_user(user: User) -> Dict[str, Any]:
-    return {
-        "id": user.id,
-        "email": user.email,
-        "created_at": user.created_at.isoformat(),
-    }
-
-def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-    db: Session = Depends(get_db),
-) -> User:
-    if not credentials:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
-    try:
-        payload = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=["HS256"])
-    except jwt.PyJWTError:
-        raise HTTPException(status_code=401, detail="Invalid token")
-
-    user = db.get(User, payload.get("user_id"))
-    if not user:
-        raise HTTPException(status_code=401, detail="User not found")
-
-    return user
-
-# ------------------------------------------------------------------
-# Schemas
-# ------------------------------------------------------------------
-
-class AuthPayload(BaseModel):
-    email: str
-    password: str
-
-security = HTTPBearer(auto_error=False)
 
 
 def hash_password(password: str) -> str:
@@ -186,14 +132,51 @@ def get_current_user(
     return user
 
 
+# ------------------------------------------------------------------
+# Schemas
+# ------------------------------------------------------------------
+
+
+class AuthPayload(BaseModel):
+    email: str
+    password: str
+
+
+class SubjectCreate(BaseModel):
+    name: str
+
+
+class SubjectUpdate(BaseModel):
+    name: str
+
+
+class NotebookCreate(BaseModel):
+    name: str
+    color: Optional[str] = None
+    icon: Optional[str] = None
+
+
+class NotebookUpdate(BaseModel):
+    name: Optional[str] = None
+    color: Optional[str] = None
+    icon: Optional[str] = None
+
+
+class ChangePasswordPayload(BaseModel):
+    current_password: str
+    new_password: str
+
+
 class NoteCreate(BaseModel):
     title: Optional[str] = None
     device: Optional[str] = None
     notebook_id: Optional[int] = None
 
+
 class StrokePayload(BaseModel):
     strokes: List[Dict[str, Any]]
     captured_at: Optional[str] = None
+
 
 class FlashcardPayload(BaseModel):
     cards: Optional[List[Dict[str, str]]] = None
@@ -276,6 +259,275 @@ async def login(payload: AuthPayload, db: Session = Depends(get_db)):
 async def me(current_user: User = Depends(get_current_user)):
     return {"user": serialize_user(current_user)}
 
+
+@app.post("/api/auth/change-password")
+async def change_password(
+    payload: ChangePasswordPayload,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if not verify_password(payload.current_password, current_user.password_hash):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    new_password = payload.new_password.strip()
+    if len(new_password) < 8:
+        raise HTTPException(status_code=400, detail="New password is too short")
+    current_user.password_hash = hash_password(new_password)
+    db.commit()
+    return {"status": "ok"}
+
+# ------------------------------------------------------------------
+# Subjects + Notebooks
+# ------------------------------------------------------------------
+
+def serialize_subject(subject: Subject, notebook_count: int) -> Dict[str, Any]:
+    return {
+        "id": subject.id,
+        "name": subject.name,
+        "notebook_count": notebook_count,
+    }
+
+
+def serialize_notebook_base(
+    notebook: Notebook,
+    note_count: int,
+) -> Dict[str, Any]:
+    return {
+        "id": notebook.id,
+        "name": notebook.name,
+        "color": notebook.color,
+        "icon": notebook.icon,
+        "note_count": note_count,
+    }
+
+
+@app.get("/api/library")
+async def get_library(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    subjects_with_counts = db.execute(
+        select(Subject, func.count(Notebook.id))
+        .outerjoin(Notebook)
+        .where(Subject.user_id == current_user.id)
+        .group_by(Subject.id)
+        .order_by(Subject.created_at)
+    ).all()
+
+    notebooks_with_counts = db.execute(
+        select(Notebook, func.count(Note.id))
+        .outerjoin(Note)
+        .where(Notebook.user_id == current_user.id)
+        .group_by(Notebook.id)
+        .order_by(Notebook.created_at.desc())
+    ).all()
+
+    return {
+        "subjects": [
+            serialize_subject(subject, notebook_count)
+            for subject, notebook_count in subjects_with_counts
+        ],
+        "notebooks": [
+            serialize_notebook_base(notebook, note_count)
+            for notebook, note_count in notebooks_with_counts
+        ],
+    }
+
+
+@app.get("/api/subjects")
+async def list_subjects(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    subjects_with_counts = db.execute(
+        select(Subject, func.count(Notebook.id))
+        .outerjoin(Notebook)
+        .where(Subject.user_id == current_user.id)
+        .group_by(Subject.id)
+        .order_by(Subject.created_at)
+    ).all()
+
+    return {
+        "subjects": [
+            serialize_subject(subject, notebook_count)
+            for subject, notebook_count in subjects_with_counts
+        ]
+    }
+
+
+@app.post("/api/subjects")
+async def create_subject(
+    payload: SubjectCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Name is required")
+
+    subject = Subject(name=name, user_id=current_user.id)
+    db.add(subject)
+    db.commit()
+    db.refresh(subject)
+    return serialize_subject(subject, 0)
+
+
+@app.patch("/api/subjects/{subject_id}")
+async def update_subject(
+    subject_id: int,
+    payload: SubjectUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    subject = db.execute(
+        select(Subject).where(
+            Subject.id == subject_id, Subject.user_id == current_user.id
+        )
+    ).scalar_one_or_none()
+    if not subject:
+        raise HTTPException(status_code=404, detail="Subject not found")
+
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Name is required")
+
+    subject.name = name
+    db.commit()
+    db.refresh(subject)
+    return serialize_subject(subject, len(subject.notebooks))
+
+
+@app.delete("/api/subjects/{subject_id}")
+async def delete_subject(
+    subject_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    subject = db.execute(
+        select(Subject).where(
+            Subject.id == subject_id, Subject.user_id == current_user.id
+        )
+    ).scalar_one_or_none()
+    if not subject:
+        raise HTTPException(status_code=404, detail="Subject not found")
+
+    db.delete(subject)
+    db.commit()
+    return {"status": "ok"}
+
+
+@app.get("/api/subjects/{subject_id}/notebooks")
+async def get_subject_notebooks(
+    subject_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    subject = db.execute(
+        select(Subject).where(
+            Subject.id == subject_id, Subject.user_id == current_user.id
+        )
+    ).scalar_one_or_none()
+    if not subject:
+        raise HTTPException(status_code=404, detail="Subject not found")
+
+    notebooks_with_stats = db.execute(
+        select(Notebook, func.count(Note.id), func.max(Note.updated_at))
+        .outerjoin(Note)
+        .where(Notebook.subject_id == subject.id, Notebook.user_id == current_user.id)
+        .group_by(Notebook.id)
+        .order_by(Notebook.created_at)
+    ).all()
+
+    notebooks = []
+    for notebook, note_count, updated_at in notebooks_with_stats:
+        notebook_data = serialize_notebook_base(notebook, note_count)
+        notebook_data["updated_at"] = (
+            updated_at or notebook.created_at
+        ).isoformat()
+        notebooks.append(notebook_data)
+
+    return {"subject": {"id": subject.id, "name": subject.name}, "notebooks": notebooks}
+
+
+@app.post("/api/subjects/{subject_id}/notebooks")
+async def create_notebook(
+    subject_id: int,
+    payload: NotebookCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    subject = db.execute(
+        select(Subject).where(
+            Subject.id == subject_id, Subject.user_id == current_user.id
+        )
+    ).scalar_one_or_none()
+    if not subject:
+        raise HTTPException(status_code=404, detail="Subject not found")
+
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Name is required")
+
+    notebook = Notebook(
+        name=name,
+        color=payload.color or "#14b8a6",
+        icon=payload.icon or "Atom",
+        user_id=current_user.id,
+        subject_id=subject.id,
+    )
+    db.add(notebook)
+    db.commit()
+    db.refresh(notebook)
+    return serialize_notebook_base(notebook, 0)
+
+
+@app.patch("/api/notebooks/{notebook_id}")
+async def update_notebook(
+    notebook_id: int,
+    payload: NotebookUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    notebook = db.execute(
+        select(Notebook).where(
+            Notebook.id == notebook_id, Notebook.user_id == current_user.id
+        )
+    ).scalar_one_or_none()
+    if not notebook:
+        raise HTTPException(status_code=404, detail="Notebook not found")
+
+    if payload.name is not None:
+        name = payload.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Name is required")
+        notebook.name = name
+    if payload.color is not None:
+        notebook.color = payload.color
+    if payload.icon is not None:
+        notebook.icon = payload.icon
+
+    db.commit()
+    db.refresh(notebook)
+    return serialize_notebook_base(notebook, len(notebook.notes))
+
+
+@app.delete("/api/notebooks/{notebook_id}")
+async def delete_notebook(
+    notebook_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    notebook = db.execute(
+        select(Notebook).where(
+            Notebook.id == notebook_id, Notebook.user_id == current_user.id
+        )
+    ).scalar_one_or_none()
+    if not notebook:
+        raise HTTPException(status_code=404, detail="Notebook not found")
+
+    db.delete(notebook)
+    db.commit()
+    return {"status": "ok"}
+
 # ------------------------------------------------------------------
 # Notes (OWNERSHIP ALWAYS VIA NOTEBOOK)
 # ------------------------------------------------------------------
@@ -290,67 +542,38 @@ def owned_note(db: Session, note_id: int, user_id: int) -> Optional[Note]:
         )
     ).scalar_one_or_none()
 
-def ensure_user_defaults(db: Session, user: User) -> None:
-    subject = get_or_create_default_subject(db, user)
-    get_or_create_default_notebook(db, user, subject)
 
-
-def throttle_login(request: Request) -> None:
-    client_host = request.client.host if request.client else "unknown"
-    now = time.time()
-    attempts = login_attempts.get(client_host, [])
-    attempts = [attempt for attempt in attempts if now - attempt < LOGIN_THROTTLE_WINDOW_SECONDS]
-    if len(attempts) >= LOGIN_THROTTLE_MAX_ATTEMPTS:
-        raise HTTPException(status_code=429, detail="Too many login attempts")
-    attempts.append(now)
-    login_attempts[client_host] = attempts
-
-
-@app.post("/api/auth/signup")
-async def signup(payload: AuthPayload, db: Session = Depends(get_db)):
-    existing = db.execute(
-        select(User).where(User.email == payload.email.lower())
+@app.get("/api/notebooks/{notebook_id}/notes")
+async def get_notebook_notes(
+    notebook_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    notebook = db.execute(
+        select(Notebook).where(
+            Notebook.id == notebook_id, Notebook.user_id == current_user.id
+        )
     ).scalar_one_or_none()
-    if existing:
-        raise HTTPException(status_code=400, detail="Email already registered")
+    if not notebook:
+        raise HTTPException(status_code=404, detail="Notebook not found")
 
-    user = User(email=payload.email.lower(), password_hash=hash_password(payload.password))
-    db.add(user)
-    db.commit()
-    db.refresh(user)
+    notes_with_counts = db.execute(
+        select(Note, func.count(Flashcard.id))
+        .outerjoin(Flashcard)
+        .where(Note.notebook_id == notebook_id)
+        .group_by(Note.id)
+        .order_by(Note.updated_at.desc())
+    ).all()
 
-    ensure_user_defaults(db, user)
-
-    token = create_access_token(user)
-    return {
-        "access_token": token,
-        "token_type": "bearer",
-        "user": serialize_user(user),
-    }
-
-
-@app.post("/api/auth/login")
-async def login(payload: AuthPayload, request: Request, db: Session = Depends(get_db)):
-    throttle_login(request)
-    user = db.execute(
-        select(User).where(User.email == payload.email.lower())
-    ).scalar_one_or_none()
-    if not user or not verify_password(payload.password, user.password_hash):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-
-    ensure_user_defaults(db, user)
-
-    token = create_access_token(user)
-    return {
-        "access_token": token,
-        "token_type": "bearer",
-        "user": serialize_user(user),
-    }
-
-
-@app.get("/api/auth/me")
-async def me(current_user: User = Depends(get_current_user)):
-    return {"user": serialize_user(current_user)}
+    return [
+        {
+            "id": note.id,
+            "title": note.title,
+            "updated_at": note.updated_at.isoformat(),
+            "flashcard_count": flashcard_count,
+        }
+        for note, flashcard_count in notes_with_counts
+    ]
 
 
 @app.post("/api/notes")
@@ -475,9 +698,10 @@ async def get_note(
             "id": note.notebook.id,
             "name": note.notebook.name,
         },
-        "subject": {
-            "id": note.notebook.subject.id,
-            "name": note.notebook.subject.name,
-        },
         "updated_at": note.updated_at.isoformat(),
+        "file_url": None,
+        "cards": [
+            {"question": card.question, "answer": card.answer}
+            for card in note.flashcards
+        ],
     }
