@@ -36,12 +36,14 @@ const LibraryPage = () => {
         <h1 className="text-3xl font-semibold">My Knowledge Atlas</h1>
         <p className="mt-2 text-sm text-muted">Your collection of subjects and study materials</p>
       </div>
-      <PrimaryButton
-        className="rounded-xl px-5 py-2 text-xs"
-        onClick={() => setIsModalOpen(true)}
-      >
-        + New Subject
-      </PrimaryButton>
+      {subjects.length > 0 ? (
+        <PrimaryButton
+          className="rounded-xl px-5 py-2 text-xs"
+          onClick={() => setIsModalOpen(true)}
+        >
+          + New Subject
+        </PrimaryButton>
+      ) : null}
 
       {isLoading ? (
         <p className="text-sm text-muted">Loading subjects…</p>

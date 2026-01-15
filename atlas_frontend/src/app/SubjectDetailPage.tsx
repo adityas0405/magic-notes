@@ -155,12 +155,14 @@ const SubjectDetailPage = () => {
       {subjectActionError ? (
         <p className="text-xs text-red-500">{subjectActionError}</p>
       ) : null}
-      <PrimaryButton
-        className="rounded-xl px-5 py-2 text-xs"
-        onClick={() => setIsCreateModalOpen(true)}
-      >
-        + New Notebook
-      </PrimaryButton>
+      {notebooks.length > 0 ? (
+        <PrimaryButton
+          className="rounded-xl px-5 py-2 text-xs"
+          onClick={() => setIsCreateModalOpen(true)}
+        >
+          + New Notebook
+        </PrimaryButton>
+      ) : null}
 
       {isLoading ? (
         <p className="text-sm text-muted">Loading notebooks…</p>
