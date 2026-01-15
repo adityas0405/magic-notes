@@ -150,6 +150,19 @@ def serialize_ai_job(job: AIJob) -> Dict[str, Any]:
     }
 
 
+def serialize_note_stroke(stroke: NoteStroke) -> Dict[str, Any]:
+    try:
+        payload: Any = json.loads(stroke.payload)
+    except json.JSONDecodeError:
+        payload = stroke.payload
+    return {
+        "id": stroke.id,
+        "note_id": stroke.note_id,
+        "payload": payload,
+        "created_at": stroke.created_at.isoformat(),
+    }
+
+
 def _iter_stroke_points(stroke: Dict[str, Any]) -> Iterable[Tuple[float, float]]:
     candidates = stroke.get("points") or stroke.get("path") or stroke.get("segments")
     if isinstance(stroke.get("x"), list) and isinstance(stroke.get("y"), list):
@@ -917,6 +930,24 @@ async def add_strokes(
     note.updated_at = datetime.datetime.utcnow()
     db.commit()
     return {"status": "ok"}
+
+
+@app.get("/api/notes/{note_id}/strokes")
+async def get_note_strokes(
+    note_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    note = owned_note(db, note_id, current_user.id)
+    if not note:
+        raise HTTPException(status_code=404, detail="Note not found")
+
+    strokes = db.execute(
+        select(NoteStroke)
+        .where(NoteStroke.note_id == note.id)
+        .order_by(NoteStroke.created_at.asc(), NoteStroke.id.asc())
+    ).scalars()
+    return [serialize_note_stroke(stroke) for stroke in strokes]
 
 @app.post("/api/notes/{note_id}/upload")
 async def upload_note_file(
