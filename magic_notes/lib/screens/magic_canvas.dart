@@ -4,9 +4,16 @@ import '../models/drawing.dart';
 import '../services/api_service.dart';
 
 class MagicCanvas extends StatefulWidget {
-  const MagicCanvas({super.key, required this.apiService});
+  const MagicCanvas({
+    super.key,
+    required this.apiService,
+    required this.onRequestToken,
+    required this.onAuthExpired,
+  });
 
   final ApiService apiService;
+  final VoidCallback onRequestToken;
+  final VoidCallback onAuthExpired;
 
   @override
   State<MagicCanvas> createState() => _MagicCanvasState();
@@ -16,64 +23,6 @@ class _MagicCanvasState extends State<MagicCanvas> {
   final List<Stroke> strokes = [];
   Stroke? currentStroke;
   String statusMessage = 'Ready to capture.';
-
-  Future<void> _promptForToken() async {
-    final controller = TextEditingController();
-
-    final token = await showDialog<String>(
-      context: context,
-      builder: (ctx) {
-        return AlertDialog(
-          title: const Text('Set Auth Token'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Text(
-                'Paste your JWT access token from the web app (localStorage).',
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: controller,
-                obscureText: false,
-                autocorrect: false,
-                enableSuggestions: false,
-                decoration: const InputDecoration(
-                  labelText: 'Bearer token',
-                  border: OutlineInputBorder(),
-                ),
-                minLines: 1,
-                maxLines: 3,
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(null),
-              child: const Text('Cancel'),
-            ),
-            ElevatedButton(
-              onPressed: () => Navigator.of(ctx).pop(controller.text.trim()),
-              child: const Text('Save'),
-            ),
-          ],
-        );
-      },
-    );
-
-    if (token == null) return;
-
-    if (token.isEmpty) {
-      setState(() => statusMessage = 'Token was empty. Not saved.');
-      return;
-    }
-
-    await widget.apiService.setAuthToken(token);
-    if (!mounted) return;
-
-    setState(() {
-      statusMessage = 'Auth token saved. You can Send now.';
-    });
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -86,10 +35,10 @@ class _MagicCanvasState extends State<MagicCanvas> {
         backgroundColor: const Color.fromARGB(255, 192, 158, 252),
         actions: [
           TextButton.icon(
-            onPressed: _promptForToken,
+            onPressed: widget.onRequestToken,
             icon: const Icon(Icons.key, color: Colors.white),
             label: const Text(
-              'Set Token',
+              'Change Token',
               style: TextStyle(color: Colors.white),
             ),
           ),
@@ -143,7 +92,7 @@ class _MagicCanvasState extends State<MagicCanvas> {
                   Text(
                     hasToken
                         ? statusMessage
-                        : 'No auth token set. Tap "Set Token" in the top bar.',
+                        : 'No auth token set. Tap "Change Token" in the top bar.',
                     style: Theme.of(context)
                         .textTheme
                         .bodySmall
@@ -169,7 +118,7 @@ class _MagicCanvasState extends State<MagicCanvas> {
                             if (!widget.apiService.hasAuthToken) {
                               setState(() {
                                 statusMessage =
-                                    'Missing token. Tap "Set Token" first.';
+                                    'Missing token. Tap "Change Token" first.';
                               });
                               return;
                             }
@@ -186,9 +135,9 @@ class _MagicCanvasState extends State<MagicCanvas> {
                             });
 
                             try {
-                              final noteId = await widget.apiService.createNote(
-                                title: 'Captured Note',
-                                device: 'samsung-tab-s7',
+                              final noteId =
+                                  await widget.apiService.createNote(
+                                deviceType: 'tablet',
                               );
                               await widget.apiService
                                   .uploadStrokes(noteId, strokes);
@@ -198,6 +147,16 @@ class _MagicCanvasState extends State<MagicCanvas> {
                                 statusMessage = 'Uploaded note #$noteId';
                               });
                             } catch (error) {
+                              if (error is ApiUnauthorizedException) {
+                                if (mounted) {
+                                  setState(() {
+                                    statusMessage =
+                                        'Token expired. Please re-enter.';
+                                  });
+                                }
+                                widget.onAuthExpired();
+                                return;
+                              }
                               if (!mounted) return;
                               setState(() {
                                 statusMessage =
