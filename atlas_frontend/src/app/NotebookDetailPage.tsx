@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { useNoteDetail, useNotebookNotes } from "../lib/queries";
+import { getApiErrorMessage } from "../lib/api";
+import { useNoteDetail, useNotebookNotes, useSubjectNotebooks, useUpdateNotebook } from "../lib/queries";
 
 const NotebookDetailPage = () => {
   const { subjectId, notebookId } = useParams();
   const { data: notes, isLoading: isNotesLoading } = useNotebookNotes(notebookId);
+  const { data: subjectData } = useSubjectNotebooks(subjectId);
   const [selectedNoteId, setSelectedNoteId] = useState<number | null>(null);
   const { data: noteDetail, isLoading: isNoteLoading } = useNoteDetail(
     selectedNoteId ?? undefined
@@ -12,6 +14,11 @@ const NotebookDetailPage = () => {
   const [tab, setTab] = useState<"flashcards" | "summary">("flashcards");
   const [cardIndex, setCardIndex] = useState(0);
   const [viewMode, setViewMode] = useState<"handwriting" | "digitized">("handwriting");
+  const [isRenamingNotebook, setIsRenamingNotebook] = useState(false);
+  const [notebookNameInput, setNotebookNameInput] = useState("");
+
+  const notebookIdNumber = notebookId ? Number(notebookId) : undefined;
+  const updateNotebook = useUpdateNotebook(notebookIdNumber, subjectId ? Number(subjectId) : undefined);
 
   useEffect(() => {
     if (notes?.length && !selectedNoteId) {
@@ -28,7 +35,9 @@ const NotebookDetailPage = () => {
   const card = cards[cardIndex];
   const noteTitle = noteDetail?.title ?? "Select a note";
   const subjectName = noteDetail?.subject.name ?? "Subject";
-  const notebookName = noteDetail?.notebook.name ?? "Notebook";
+  const notebookName =
+    subjectData?.notebooks.find((notebook) => notebook.id === notebookIdNumber)
+      ?.name ?? noteDetail?.notebook.name ?? "Notebook";
   const hasNotes = Boolean(notes?.length);
   const hasFile = Boolean(noteDetail?.file_url);
   const fileLabel = hasFile ? "View latest upload" : "No handwriting upload yet";
@@ -49,8 +58,67 @@ const NotebookDetailPage = () => {
   return (
     <div className="space-y-6">
       {breadcrumb}
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">{noteTitle}</h1>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          {isRenamingNotebook ? (
+            <div className="space-y-2">
+              <input
+                className="w-full rounded-xl border border-border bg-base px-3 py-2 text-sm"
+                value={notebookNameInput}
+                onChange={(event) => setNotebookNameInput(event.target.value)}
+              />
+              <div className="flex gap-2 text-xs">
+                <button
+                  className="rounded-lg border border-border px-3 py-1 text-muted"
+                  onClick={() => {
+                    setIsRenamingNotebook(false);
+                    setNotebookNameInput(notebookName);
+                  }}
+                  type="button"
+                >
+                  Cancel
+                </button>
+                <button
+                  className="rounded-lg bg-primary px-3 py-1 text-xs text-white"
+                  onClick={async () => {
+                    const name = notebookNameInput.trim();
+                    if (!name) {
+                      return;
+                    }
+                    await updateNotebook.mutateAsync({ name });
+                    setIsRenamingNotebook(false);
+                  }}
+                  type="button"
+                  disabled={updateNotebook.isPending}
+                >
+                  {updateNotebook.isPending ? "Saving…" : "Save"}
+                </button>
+              </div>
+              {updateNotebook.isError ? (
+                <p className="text-xs text-red-500">
+                  {getApiErrorMessage(updateNotebook.error, "Failed to rename notebook.")}
+                </p>
+              ) : null}
+            </div>
+          ) : (
+            <>
+              <h1 className="text-2xl font-semibold">{notebookName}</h1>
+              <p className="text-sm text-muted">{noteTitle}</p>
+            </>
+          )}
+        </div>
+        {!isRenamingNotebook ? (
+          <button
+            className="rounded-xl border border-border px-3 py-2 text-xs text-muted"
+            onClick={() => {
+              setNotebookNameInput(notebookName);
+              setIsRenamingNotebook(true);
+            }}
+            type="button"
+          >
+            Rename Notebook
+          </button>
+        ) : null}
         <div className="flex items-center gap-2 rounded-xl bg-base p-1">
           <button
             className={`rounded-lg px-4 py-2 text-xs font-medium shadow-sm ${

@@ -16,7 +16,6 @@ class User(Base):
 
     subjects = relationship("Subject", back_populates="user", cascade="all, delete-orphan")
     notebooks = relationship("Notebook", back_populates="user", cascade="all, delete-orphan")
-    notes = relationship("Note", back_populates="user", cascade="all, delete-orphan")
 
 
 class Subject(Base):
@@ -25,7 +24,7 @@ class Subject(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"))
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
 
     user = relationship("User", back_populates="subjects")
     notebooks = relationship(
@@ -41,8 +40,8 @@ class Notebook(Base):
     color = Column(String, default="#14b8a6")
     icon = Column(String, default="Atom")
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"))
-    subject_id = Column(Integer, ForeignKey("subjects.id", ondelete="CASCADE"))
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    subject_id = Column(Integer, ForeignKey("subjects.id", ondelete="CASCADE"), nullable=False)
 
     user = relationship("User", back_populates="notebooks")
     subject = relationship("Subject", back_populates="notebooks")
@@ -58,10 +57,7 @@ class Note(Base):
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow)
     summary = Column(Text, default="")
-    notebook_id = Column(Integer, ForeignKey("notebooks.id", ondelete="CASCADE"))
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"))
-
-    user = relationship("User", back_populates="notes")
+    notebook_id = Column(Integer, ForeignKey("notebooks.id", ondelete="CASCADE"), nullable=False)
     notebook = relationship("Notebook", back_populates="notes")
     strokes = relationship("NoteStroke", back_populates="note", cascade="all, delete-orphan")
     files = relationship("NoteFile", back_populates="note", cascade="all, delete-orphan")

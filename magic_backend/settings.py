@@ -33,7 +33,7 @@ STORAGE_DIR = os.environ.get(
     "STORAGE_DIR", os.path.join(os.path.dirname(__file__), "storage")
 )
 CORS_ORIGINS = _parse_origins(os.environ.get("CORS_ORIGINS"))
-CORS_ORIGIN_REGEX = os.environ.get("CORS_ORIGIN_REGEX")
+CORS_ORIGIN_REGEX = os.environ.get("CORS_ORIGIN_REGEX", r"https://.*\\.vercel\\.app")
 
 
 @dataclass(frozen=True)
