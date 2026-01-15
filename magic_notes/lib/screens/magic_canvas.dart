@@ -17,13 +17,83 @@ class _MagicCanvasState extends State<MagicCanvas> {
   Stroke? currentStroke;
   String statusMessage = 'Ready to capture.';
 
+  Future<void> _promptForToken() async {
+    final controller = TextEditingController();
+
+    final token = await showDialog<String>(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          title: const Text('Set Auth Token'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'Paste your JWT access token from the web app (localStorage).',
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: controller,
+                obscureText: false,
+                autocorrect: false,
+                enableSuggestions: false,
+                decoration: const InputDecoration(
+                  labelText: 'Bearer token',
+                  border: OutlineInputBorder(),
+                ),
+                minLines: 1,
+                maxLines: 3,
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(null),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(ctx).pop(controller.text.trim()),
+              child: const Text('Save'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (token == null) return;
+
+    if (token.isEmpty) {
+      setState(() => statusMessage = 'Token was empty. Not saved.');
+      return;
+    }
+
+    await widget.apiService.setAuthToken(token);
+    if (!mounted) return;
+
+    setState(() {
+      statusMessage = 'Auth token saved. You can Send now.';
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
+    final hasToken = widget.apiService.hasAuthToken;
+
     return Scaffold(
       backgroundColor: Colors.white,
       appBar: AppBar(
         title: const Text('Magic Notebook'),
         backgroundColor: const Color.fromARGB(255, 192, 158, 252),
+        actions: [
+          TextButton.icon(
+            onPressed: _promptForToken,
+            icon: const Icon(Icons.key, color: Colors.white),
+            label: const Text(
+              'Set Token',
+              style: TextStyle(color: Colors.white),
+            ),
+          ),
+        ],
       ),
       body: Column(
         children: [
@@ -71,7 +141,9 @@ class _MagicCanvasState extends State<MagicCanvas> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    statusMessage,
+                    hasToken
+                        ? statusMessage
+                        : 'No auth token set. Tap "Set Token" in the top bar.',
                     style: Theme.of(context)
                         .textTheme
                         .bodySmall
@@ -94,6 +166,14 @@ class _MagicCanvasState extends State<MagicCanvas> {
                       Expanded(
                         child: ElevatedButton.icon(
                           onPressed: () async {
+                            if (!widget.apiService.hasAuthToken) {
+                              setState(() {
+                                statusMessage =
+                                    'Missing token. Tap "Set Token" first.';
+                              });
+                              return;
+                            }
+
                             if (strokes.isEmpty) {
                               setState(() {
                                 statusMessage = 'Draw something first.';
@@ -110,15 +190,18 @@ class _MagicCanvasState extends State<MagicCanvas> {
                                 title: 'Captured Note',
                                 device: 'samsung-tab-s7',
                               );
-                              await widget.apiService.uploadStrokes(noteId, strokes);
-                              if (!context.mounted) return;
+                              await widget.apiService
+                                  .uploadStrokes(noteId, strokes);
+
+                              if (!mounted) return;
                               setState(() {
                                 statusMessage = 'Uploaded note #$noteId';
                               });
                             } catch (error) {
-                              if (!context.mounted) return;
+                              if (!mounted) return;
                               setState(() {
-                                statusMessage = 'Failed to connect. Check backend.';
+                                statusMessage =
+                                    'Upload failed (auth or backend).';
                               });
                             }
                           },

@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../config.dart';
 import '../models/drawing.dart';
@@ -13,17 +14,31 @@ class ApiService {
   final String baseUrl;
   String? _authToken;
 
-  /// Example login flow:
-  /// final response = await http.post(
-  ///   Uri.parse('$baseUrl/api/auth/login'),
-  ///   headers: {'Content-Type': 'application/json'},
-  ///   body: jsonEncode({'email': email, 'password': password}),
-  /// );
-  /// final decoded = jsonDecode(response.body) as Map<String, dynamic>;
-  /// apiService.setAuthToken(decoded['access_token'] as String);
-  void setAuthToken(String token) {
+  /// Persist + set the auth token (JWT).
+  Future<void> setAuthToken(String token) async {
     _authToken = token;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_prefsTokenKey, token);
   }
+
+  /// Load a persisted auth token (JWT) into memory.
+  Future<void> loadAuthToken() async {
+    final prefs = await SharedPreferences.getInstance();
+    final token = prefs.getString(_prefsTokenKey);
+    if (token != null && token.isNotEmpty) {
+      _authToken = token;
+    }
+  }
+
+  /// Clear token from memory + storage (logout / reset).
+  Future<void> clearAuthToken() async {
+    _authToken = null;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_prefsTokenKey);
+  }
+
+  /// Optional helper: is a token currently available?
+  bool get hasAuthToken => _authToken != null && _authToken!.isNotEmpty;
 
   Map<String, String> _headers({bool json = true}) {
     final headers = <String, String>{};
@@ -50,7 +65,9 @@ class ApiService {
     );
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw Exception('Failed to create note (${response.statusCode}).');
+      throw Exception(
+        'Failed to create note (${response.statusCode}): ${_safeBody(response)}',
+      );
     }
 
     final decoded = jsonDecode(response.body) as Map<String, dynamic>;
@@ -70,15 +87,20 @@ class ApiService {
     );
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw Exception('Failed to upload strokes (${response.statusCode}).');
+      throw Exception(
+        'Failed to upload strokes (${response.statusCode}): ${_safeBody(response)}',
+      );
     }
   }
 
   Future<List<NotebookSummary>> fetchNotebooks() async {
     final response =
         await http.get(Uri.parse('$baseUrl/api/library'), headers: _headers());
+
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw Exception('Failed to load library (${response.statusCode}).');
+      throw Exception(
+        'Failed to load library (${response.statusCode}): ${_safeBody(response)}',
+      );
     }
 
     final decoded = jsonDecode(response.body) as Map<String, dynamic>;
@@ -93,8 +115,11 @@ class ApiService {
       Uri.parse('$baseUrl/api/notebooks/$notebookId/notes'),
       headers: _headers(),
     );
+
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw Exception('Failed to load notes (${response.statusCode}).');
+      throw Exception(
+        'Failed to load notes (${response.statusCode}): ${_safeBody(response)}',
+      );
     }
 
     final decoded = jsonDecode(response.body) as List<dynamic>;
@@ -106,8 +131,11 @@ class ApiService {
       Uri.parse('$baseUrl/api/notes/$noteId'),
       headers: _headers(),
     );
+
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw Exception('Failed to load note (${response.statusCode}).');
+      throw Exception(
+        'Failed to load note (${response.statusCode}): ${_safeBody(response)}',
+      );
     }
 
     final decoded = jsonDecode(response.body) as Map<String, dynamic>;
@@ -125,6 +153,21 @@ class ApiService {
     }
 
     return Uri.parse(baseUrl).resolve(fileUrl).toString();
+  }
+
+  // --- helpers ---
+
+  static const String _prefsTokenKey = 'auth_token';
+
+  String _safeBody(http.Response response) {
+    try {
+      final body = response.body;
+      if (body.isEmpty) return '';
+      // Avoid huge logs
+      return body.length > 500 ? '${body.substring(0, 500)}…' : body;
+    } catch (_) {
+      return '';
+    }
   }
 }
 

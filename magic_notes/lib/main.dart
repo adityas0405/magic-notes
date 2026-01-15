@@ -3,7 +3,8 @@ import 'package:flutter/material.dart';
 import 'screens/magic_canvas.dart';
 import 'services/api_service.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
   runApp(const MagicNotesApp());
 }
 
@@ -34,9 +35,29 @@ class MagicNotesHome extends StatefulWidget {
 
 class _MagicNotesHomeState extends State<MagicNotesHome> {
   final ApiService _apiService = ApiService();
+  bool _isReady = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _bootstrap();
+  }
+
+  Future<void> _bootstrap() async {
+    await _apiService.loadAuthToken();
+    if (!mounted) return;
+    setState(() => _isReady = true);
+  }
 
   @override
   Widget build(BuildContext context) {
+    if (!_isReady) {
+      return const Scaffold(
+        body: Center(
+          child: CircularProgressIndicator(),
+        ),
+      );
+    }
     return MagicCanvas(apiService: _apiService);
   }
 }
