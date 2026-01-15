@@ -3,6 +3,7 @@ import json
 import logging
 import math
 import os
+import threading
 import uuid
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -50,6 +51,8 @@ os.makedirs(OCR_IMAGE_DIR, exist_ok=True)
 OCR_ENGINE = "paddleocr"
 
 logger = logging.getLogger(__name__)
+_OCR = None
+_OCR_LOCK = threading.Lock()
 
 # ------------------------------------------------------------------
 # App setup
@@ -249,9 +252,7 @@ def render_note_strokes_to_png(note: Note, job_id: int) -> str:
 
 
 def run_paddleocr(image_path: str) -> Tuple[str, Optional[float]]:
-    from paddleocr import PaddleOCR
-
-    ocr = PaddleOCR(use_angle_cls=True, lang="en")
+    ocr = get_ocr()
     result = ocr.ocr(image_path, cls=True)
     if not result:
         return "", None
@@ -281,6 +282,17 @@ def run_paddleocr(image_path: str) -> Tuple[str, Optional[float]]:
     if confidences:
         avg_confidence = sum(confidences) / len(confidences)
     return "\n".join(lines).strip(), avg_confidence
+
+
+def get_ocr():
+    global _OCR
+    if _OCR is None:
+        with _OCR_LOCK:
+            if _OCR is None:
+                from paddleocr import PaddleOCR
+
+                _OCR = PaddleOCR(use_angle_cls=True, lang="en")
+    return _OCR
 
 
 def run_ocr_job(job_id: int) -> None:
