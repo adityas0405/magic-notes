@@ -1,5 +1,7 @@
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import PrimaryButton from "../components/PrimaryButton";
+import atlasLogo from "../assets/atlas-logo.svg";
+import { useAuth } from "../lib/auth";
 
 const features = [
   {
@@ -20,15 +22,20 @@ const features = [
 ];
 
 const HomePage = () => {
+  const { isAuthenticated, isLoading } = useAuth();
+  const navigate = useNavigate();
+
   return (
     <div className="min-h-screen bg-base text-text">
       <header className="flex items-center justify-between px-12 py-6">
-        <div className="flex items-center gap-2">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-text text-white">
-            A
-          </div>
+        <Link to="/" className="flex items-center gap-2" aria-label="Atlas home">
+          <img
+            src={atlasLogo}
+            alt="Atlas logo"
+            className="h-9 w-9 rounded-lg object-contain"
+          />
           <span className="text-lg font-semibold">Atlas</span>
-        </div>
+        </Link>
         <Link className="text-sm font-medium text-muted" to="/login">
           Sign In
         </Link>
@@ -44,7 +51,16 @@ const HomePage = () => {
             comprehensive quizzes. Your personal AI study companion for true understanding.
           </p>
           <div className="mt-8 flex justify-center">
-            <PrimaryButton>
+            <PrimaryButton
+              type="button"
+              onClick={() => {
+                if (isLoading) {
+                  return;
+                }
+                navigate(isAuthenticated ? "/app/library" : "/login");
+              }}
+              disabled={isLoading}
+            >
               Start Mapping <span aria-hidden>→</span>
             </PrimaryButton>
           </div>

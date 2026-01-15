@@ -1,0 +1,34 @@
+<svg width="256" height="256" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="atlasGradientLeft" x1="48" y1="24" x2="160" y2="232" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2AA5A1" />
+      <stop offset="1" stop-color="#7CC9C8" />
+    </linearGradient>
+    <linearGradient id="atlasGradientRight" x1="208" y1="24" x2="96" y2="232" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#E9E4B6" />
+      <stop offset="1" stop-color="#8CCF9B" />
+    </linearGradient>
+    <linearGradient id="atlasGradientBase" x1="40" y1="156" x2="216" y2="252" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#9EC6E8" />
+      <stop offset="0.5" stop-color="#7CC9C8" />
+      <stop offset="1" stop-color="#E9E4B6" />
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="48" fill="white" />
+  <path
+    d="M56 56C56 46.0589 64.0589 38 74 38H110C122.15 38 132 47.8497 132 60V110C132 116.627 126.627 122 120 122H74C64.0589 122 56 113.941 56 104V56Z"
+    fill="url(#atlasGradientLeft)"
+  />
+  <path
+    d="M200 56C200 46.0589 191.941 38 182 38H146C133.85 38 124 47.8497 124 60V110C124 116.627 129.373 122 136 122H182C191.941 122 200 113.941 200 104V56Z"
+    fill="url(#atlasGradientRight)"
+  />
+  <path
+    d="M128 124C116.954 124 108 132.954 108 144C108 160.569 121.431 174 138 174H154C169.464 174 182 186.536 182 202C182 217.464 169.464 230 154 230H116C84.5198 230 59 204.48 59 173V156"
+    stroke="url(#atlasGradientBase)" stroke-width="20" stroke-linecap="round" stroke-linejoin="round"
+  />
+  <path
+    d="M128 124C139.046 124 148 132.954 148 144C148 160.569 134.569 174 118 174H102C86.536 174 74 186.536 74 202C74 217.464 86.536 230 102 230H140C171.48 230 197 204.48 197 173V156"
+    stroke="url(#atlasGradientBase)" stroke-width="20" stroke-linecap="round" stroke-linejoin="round"
+  />
+</svg>

@@ -64,7 +64,19 @@ const LibraryPage = () => {
           ))}
         </div>
       ) : (
-        <p className="text-sm text-muted">No subjects yet.</p>
+        <div className="rounded-2xl border border-dashed border-border bg-base p-6 text-sm text-muted">
+          <p className="font-medium text-text">Create your first subject</p>
+          <p className="mt-1 text-xs text-muted">
+            Add a subject to start organizing your notebooks.
+          </p>
+          <PrimaryButton
+            className="mt-4 rounded-xl px-4 py-2 text-xs"
+            onClick={() => setIsModalOpen(true)}
+            type="button"
+          >
+            + New Subject
+          </PrimaryButton>
+        </div>
       )}
 
       {isModalOpen ? (

@@ -270,7 +270,19 @@ const SubjectDetailPage = () => {
           ))}
         </div>
       ) : (
-        <p className="text-sm text-muted">No notebooks yet.</p>
+        <div className="rounded-2xl border border-dashed border-border bg-base p-6 text-sm text-muted">
+          <p className="font-medium text-text">Create your first notebook</p>
+          <p className="mt-1 text-xs text-muted">
+            Add a notebook to start capturing notes for this subject.
+          </p>
+          <PrimaryButton
+            className="mt-4 rounded-xl px-4 py-2 text-xs"
+            onClick={() => setIsCreateModalOpen(true)}
+            type="button"
+          >
+            + New Notebook
+          </PrimaryButton>
+        </div>
       )}
 
       {isCreateModalOpen ? (

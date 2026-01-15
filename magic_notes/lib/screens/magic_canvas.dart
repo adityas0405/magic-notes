@@ -15,6 +15,7 @@ class MagicCanvas extends StatefulWidget {
 class _MagicCanvasState extends State<MagicCanvas> {
   final List<Stroke> strokes = [];
   Stroke? currentStroke;
+  String statusMessage = 'Ready to capture.';
 
   @override
   Widget build(BuildContext context) {
@@ -23,76 +24,115 @@ class _MagicCanvasState extends State<MagicCanvas> {
       appBar: AppBar(
         title: const Text('Magic Notebook'),
         backgroundColor: const Color.fromARGB(255, 192, 158, 252),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.delete_outline),
-            onPressed: () {
-              setState(() {
-                strokes.clear();
-              });
+      ),
+      body: Column(
+        children: [
+          Expanded(
+            child: Listener(
+              onPointerDown: (details) {
+                setState(() {
+                  currentStroke = Stroke([]);
+                  strokes.add(currentStroke!);
+                });
+              },
+              onPointerMove: (details) {
+                setState(() {
+                  final point = DrawingPoint(
+                    x: details.localPosition.dx,
+                    y: details.localPosition.dy,
+                    pressure: details.pressure,
+                    tilt: details.tilt,
+                  );
+                  currentStroke!.points.add(point);
+                });
+              },
+              onPointerUp: (details) {
+                setState(() {
+                  currentStroke = null;
+                });
+              },
+              child: CustomPaint(
+                painter: InkPainter(strokes),
+                size: Size.infinite,
+              ),
+            ),
+          ),
+          SafeArea(
+            top: false,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                border: Border(
+                  top: BorderSide(color: Colors.grey.shade200),
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    statusMessage,
+                    style: Theme.of(context)
+                        .textTheme
+                        .bodySmall
+                        ?.copyWith(color: Colors.grey.shade700),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      OutlinedButton.icon(
+                        onPressed: () {
+                          setState(() {
+                            strokes.clear();
+                            statusMessage = 'Canvas cleared.';
+                          });
+                        },
+                        icon: const Icon(Icons.delete_outline),
+                        label: const Text('Clear'),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: () async {
+                            if (strokes.isEmpty) {
+                              setState(() {
+                                statusMessage = 'Draw something first.';
+                              });
+                              return;
+                            }
 
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Page Cleared!')),
-              );
-            },
+                            setState(() {
+                              statusMessage = 'Sending your note...';
+                            });
+
+                            try {
+                              final noteId = await widget.apiService.createNote(
+                                title: 'Captured Note',
+                                device: 'samsung-tab-s7',
+                              );
+                              await widget.apiService.uploadStrokes(noteId, strokes);
+                              if (!context.mounted) return;
+                              setState(() {
+                                statusMessage = 'Uploaded note #$noteId';
+                              });
+                            } catch (error) {
+                              if (!context.mounted) return;
+                              setState(() {
+                                statusMessage = 'Failed to connect. Check backend.';
+                              });
+                            }
+                          },
+                          icon: const Icon(Icons.cloud_upload),
+                          label: const Text('Send'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
           ),
         ],
-      ),
-      body: Listener(
-        onPointerDown: (details) {
-          setState(() {
-            currentStroke = Stroke([]);
-            strokes.add(currentStroke!);
-          });
-        },
-        onPointerMove: (details) {
-          setState(() {
-            final point = DrawingPoint(
-              x: details.localPosition.dx,
-              y: details.localPosition.dy,
-              pressure: details.pressure,
-              tilt: details.tilt,
-            );
-            currentStroke!.points.add(point);
-          });
-        },
-        onPointerUp: (details) {
-          setState(() {
-            currentStroke = null;
-          });
-        },
-        child: CustomPaint(
-          painter: InkPainter(strokes),
-          size: Size.infinite,
-        ),
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: () async {
-          if (strokes.isEmpty) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Draw something first.')),
-            );
-            return;
-          }
-
-          try {
-            final noteId = await widget.apiService.createNote(
-              title: 'Captured Note',
-              device: 'samsung-tab-s7',
-            );
-            await widget.apiService.uploadStrokes(noteId, strokes);
-            if (!context.mounted) return;
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Uploaded note #$noteId')),
-            );
-          } catch (error) {
-            if (!context.mounted) return;
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Failed to connect. Check backend.')),
-            );
-          }
-        },
-        child: const Icon(Icons.cloud_upload),
       ),
     );
   }

@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 
-import 'screens/library_screen.dart';
 import 'screens/magic_canvas.dart';
 import 'services/api_service.dart';
 
@@ -35,35 +34,9 @@ class MagicNotesHome extends StatefulWidget {
 
 class _MagicNotesHomeState extends State<MagicNotesHome> {
   final ApiService _apiService = ApiService();
-  int _selectedIndex = 0;
 
   @override
   Widget build(BuildContext context) {
-    final pages = [
-      MagicCanvas(apiService: _apiService),
-      LibraryScreen(apiService: _apiService),
-    ];
-
-    return Scaffold(
-      body: pages[_selectedIndex],
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _selectedIndex,
-        onDestinationSelected: (index) {
-          setState(() {
-            _selectedIndex = index;
-          });
-        },
-        destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.draw),
-            label: 'Canvas',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.menu_book),
-            label: 'Library',
-          ),
-        ],
-      ),
-    );
+    return MagicCanvas(apiService: _apiService);
   }
 }
