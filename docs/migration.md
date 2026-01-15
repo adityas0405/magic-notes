@@ -70,3 +70,12 @@ ALTER TABLE subjects ALTER COLUMN user_id SET NOT NULL;
 ```
 
 > Note: For Fly Postgres or other managed DBs, apply these via your migration tooling rather than directly on production.
+
+## Device Inbox Columns
+
+New inbox routing adds notebook metadata so the backend can own device routing. Add the columns below before deploying inbox endpoints:
+
+```sql
+ALTER TABLE notebooks ADD COLUMN IF NOT EXISTS is_inbox BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE notebooks ADD COLUMN IF NOT EXISTS inbox_type TEXT;
+```

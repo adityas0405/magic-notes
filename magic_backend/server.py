@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 
 import bcrypt
 import jwt
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
@@ -173,6 +173,12 @@ class NoteCreate(BaseModel):
     notebook_id: Optional[int] = None
 
 
+class DeviceNoteCreate(BaseModel):
+    title: Optional[str] = None
+    device_type: str
+    device_id: Optional[str] = None
+
+
 class StrokePayload(BaseModel):
     strokes: List[Dict[str, Any]]
     captured_at: Optional[str] = None
@@ -184,6 +190,9 @@ class FlashcardPayload(BaseModel):
 # ------------------------------------------------------------------
 # Defaults (single-transaction safe)
 # ------------------------------------------------------------------
+
+INBOX_NOTEBOOKS = {"tablet": "Tablet Inbox"}
+
 
 def ensure_user_defaults(db: Session, user: User) -> None:
     subject = db.execute(
@@ -216,6 +225,51 @@ def ensure_user_defaults(db: Session, user: User) -> None:
                 subject_id=subject.id,
             )
         )
+
+
+def ensure_user_inbox(db: Session, user: User, inbox_type: str) -> Notebook:
+    normalized_type = inbox_type.strip().lower()
+    inbox_name = INBOX_NOTEBOOKS.get(normalized_type)
+    if not inbox_name:
+        raise HTTPException(status_code=400, detail="Unsupported inbox type")
+
+    subject = db.execute(
+        select(Subject).where(
+            Subject.user_id == user.id,
+            Subject.name == "Inbox",
+        )
+    ).scalar_one_or_none()
+
+    if not subject:
+        subject = Subject(name="Inbox", user_id=user.id)
+        db.add(subject)
+        db.flush()
+
+    notebook = db.execute(
+        select(Notebook).where(
+            Notebook.user_id == user.id,
+            Notebook.subject_id == subject.id,
+            Notebook.name == inbox_name,
+        )
+    ).scalar_one_or_none()
+
+    if not notebook:
+        notebook = Notebook(
+            name=inbox_name,
+            color="#14b8a6",
+            icon="Atom",
+            user_id=user.id,
+            subject_id=subject.id,
+            is_inbox=True,
+            inbox_type=normalized_type,
+        )
+        db.add(notebook)
+        db.flush()
+    else:
+        notebook.is_inbox = True
+        notebook.inbox_type = normalized_type
+
+    return notebook
 
 # ------------------------------------------------------------------
 # Auth endpoints
@@ -297,6 +351,18 @@ def serialize_notebook_base(
         "color": notebook.color,
         "icon": notebook.icon,
         "note_count": note_count,
+    }
+
+
+def serialize_inbox_notebook(notebook: Notebook) -> Dict[str, Any]:
+    return {
+        "id": notebook.id,
+        "name": notebook.name,
+        "color": notebook.color,
+        "icon": notebook.icon,
+        "is_inbox": notebook.is_inbox,
+        "inbox_type": notebook.inbox_type,
+        "subject_id": notebook.subject_id,
     }
 
 
@@ -480,6 +546,18 @@ async def create_notebook(
     return serialize_notebook_base(notebook, 0)
 
 
+@app.get("/api/notebooks/inbox")
+async def get_inbox_notebook(
+    inbox_type: str = Query(..., alias="type"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    notebook = ensure_user_inbox(db, current_user, inbox_type)
+    db.commit()
+    db.refresh(notebook)
+    return serialize_inbox_notebook(notebook)
+
+
 @app.patch("/api/notebooks/{notebook_id}")
 async def update_notebook(
     notebook_id: int,
@@ -574,6 +652,32 @@ async def get_notebook_notes(
         }
         for note, flashcard_count in notes_with_counts
     ]
+
+
+@app.post("/api/device/notes")
+async def create_device_note(
+    payload: DeviceNoteCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    device_type = payload.device_type.strip()
+    if not device_type:
+        raise HTTPException(status_code=400, detail="Device type is required")
+
+    notebook = ensure_user_inbox(db, current_user, device_type)
+
+    note = Note(
+        title=payload.title or "Untitled Note",
+        device=device_type,
+        created_at=datetime.datetime.utcnow(),
+        updated_at=datetime.datetime.utcnow(),
+        notebook_id=notebook.id,
+    )
+    db.add(note)
+    db.commit()
+    db.refresh(note)
+
+    return {"note_id": note.id, "notebook_id": notebook.id}
 
 
 @app.post("/api/notes")
