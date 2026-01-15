@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'screens/magic_canvas.dart';
+import 'screens/token_entry_screen.dart';
 import 'services/api_service.dart';
 
 Future<void> main() async {
@@ -36,6 +37,7 @@ class MagicNotesHome extends StatefulWidget {
 class _MagicNotesHomeState extends State<MagicNotesHome> {
   final ApiService _apiService = ApiService();
   bool _isReady = false;
+  bool _needsToken = true;
 
   @override
   void initState() {
@@ -46,7 +48,10 @@ class _MagicNotesHomeState extends State<MagicNotesHome> {
   Future<void> _bootstrap() async {
     await _apiService.loadAuthToken();
     if (!mounted) return;
-    setState(() => _isReady = true);
+    setState(() {
+      _isReady = true;
+      _needsToken = !_apiService.hasAuthToken;
+    });
   }
 
   @override
@@ -58,6 +63,24 @@ class _MagicNotesHomeState extends State<MagicNotesHome> {
         ),
       );
     }
-    return MagicCanvas(apiService: _apiService);
+    if (_needsToken) {
+      return TokenEntryScreen(
+        onSave: (token) async {
+          await _apiService.setAuthToken(token);
+          if (!mounted) return;
+          setState(() => _needsToken = false);
+        },
+      );
+    }
+    return MagicCanvas(
+      apiService: _apiService,
+      onRequestToken: () {
+        _apiService.clearAuthToken();
+        setState(() => _needsToken = true);
+      },
+      onAuthExpired: () {
+        setState(() => _needsToken = true);
+      },
+    );
   }
 }
