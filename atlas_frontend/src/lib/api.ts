@@ -76,6 +76,11 @@ export type NoteDetail = {
   cards: { question: string; answer: string }[];
 };
 
+export type NoteMutation = {
+  id: number;
+  title: string;
+};
+
 export class ApiError extends Error {
   status: number;
   detail?: string;
@@ -177,6 +182,17 @@ export const updateNotebook = async (
 export const deleteNotebook = async (notebookId: number) => {
   return apiFetch<{ status: string }>(`/api/notebooks/${notebookId}`, {
     method: "DELETE",
+  });
+};
+
+export const createNote = async (payload: {
+  title?: string;
+  device?: string;
+  notebook_id?: number;
+}) => {
+  return apiFetch<NoteMutation>("/api/notes", {
+    method: "POST",
+    body: JSON.stringify(payload),
   });
 };
 

@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { getApiErrorMessage } from "../lib/api";
-import { useNoteDetail, useNotebookNotes, useSubjectNotebooks, useUpdateNotebook } from "../lib/queries";
+import {
+  useCreateNote,
+  useNoteDetail,
+  useNotebookNotes,
+  useSubjectNotebooks,
+  useUpdateNotebook,
+} from "../lib/queries";
 
 const NotebookDetailPage = () => {
   const { subjectId, notebookId } = useParams();
@@ -16,9 +22,11 @@ const NotebookDetailPage = () => {
   const [viewMode, setViewMode] = useState<"handwriting" | "digitized">("handwriting");
   const [isRenamingNotebook, setIsRenamingNotebook] = useState(false);
   const [notebookNameInput, setNotebookNameInput] = useState("");
+  const [noteActionError, setNoteActionError] = useState<string | null>(null);
 
   const notebookIdNumber = notebookId ? Number(notebookId) : undefined;
   const updateNotebook = useUpdateNotebook(notebookIdNumber, subjectId ? Number(subjectId) : undefined);
+  const createNote = useCreateNote();
 
   useEffect(() => {
     if (notes?.length && !selectedNoteId) {
@@ -49,10 +57,15 @@ const NotebookDetailPage = () => {
       <div className="text-sm text-muted">
         <Link to="/app/library">Library</Link> /{" "}
         <Link to={`/app/subjects/${subjectId}`}>{subjectName}</Link> /{" "}
-        <span className="text-text">{notebookName}</span>
+        <Link
+          to={`/app/subjects/${subjectId}/notebooks/${notebookId}`}
+          className="text-text"
+        >
+          {notebookName}
+        </Link>
       </div>
     ),
-    [subjectId, subjectName, notebookName]
+    [subjectId, subjectName, notebookName, notebookId]
   );
 
   return (
@@ -158,6 +171,7 @@ const NotebookDetailPage = () => {
                       ? "border-primary bg-emerald-50 text-primary"
                       : "border-border bg-base text-text"
                   }`}
+                  type="button"
                 >
                   <p className="font-semibold">{note.title}</p>
                   <p className="text-[11px] text-muted">
@@ -167,7 +181,38 @@ const NotebookDetailPage = () => {
               ))}
             </div>
           ) : (
-            <p className="mt-4 text-xs text-muted">No notes in this notebook.</p>
+            <div className="mt-4 space-y-3">
+              <p className="text-xs text-muted">No notes in this notebook yet.</p>
+              <button
+                className="rounded-xl bg-text px-3 py-2 text-xs font-semibold text-white"
+                onClick={async () => {
+                  if (!notebookIdNumber) {
+                    return;
+                  }
+                  setNoteActionError(null);
+                  try {
+                    const note = await createNote.mutateAsync({
+                      title: "New Note",
+                      notebook_id: notebookIdNumber,
+                      device: "web",
+                    });
+                    setSelectedNoteId(note.id);
+                    setCardIndex(0);
+                  } catch (error) {
+                    setNoteActionError(
+                      getApiErrorMessage(error, "Unable to create note.")
+                    );
+                  }
+                }}
+                type="button"
+                disabled={createNote.isPending}
+              >
+                {createNote.isPending ? "Creating…" : "+ Create Note"}
+              </button>
+              {noteActionError ? (
+                <p className="text-xs text-red-500">{noteActionError}</p>
+              ) : null}
+            </div>
           )}
         </div>
 
@@ -207,7 +252,7 @@ const NotebookDetailPage = () => {
                   : "text-muted"
               }`}
               onClick={() => setTab("flashcards")}
-              disabled={!cards.length}
+              type="button"
             >
               Flashcards
             </button>
@@ -218,6 +263,7 @@ const NotebookDetailPage = () => {
                   : "text-muted"
               }`}
               onClick={() => setTab("summary")}
+              type="button"
             >
               Summary
             </button>

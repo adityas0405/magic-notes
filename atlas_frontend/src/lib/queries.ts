@@ -3,10 +3,12 @@ import {
   apiFetch,
   changePassword,
   createNotebook,
+  createNote,
   createSubject,
   deleteNotebook,
   deleteSubject,
   LibraryResponse,
+  NoteMutation,
   NoteDetail,
   NoteSummary,
   renameSubject,
@@ -152,5 +154,21 @@ export const useChangePassword = () => {
   return useMutation({
     mutationFn: (payload: { current_password: string; new_password: string }) =>
       changePassword(payload),
+  });
+};
+
+export const useCreateNote = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: { title?: string; device?: string; notebook_id?: number }) =>
+      createNote(payload),
+    onSuccess: (note: NoteMutation, payload) => {
+      if (payload.notebook_id) {
+        void queryClient.invalidateQueries({
+          queryKey: ["notebooks", String(payload.notebook_id), "notes"],
+        });
+      }
+      void queryClient.invalidateQueries({ queryKey: ["notes", note.id] });
+    },
   });
 };

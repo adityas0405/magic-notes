@@ -1,5 +1,6 @@
-import { NavLink } from "react-router-dom";
+import { Link, NavLink } from "react-router-dom";
 import { useAuth } from "../lib/auth";
+import atlasLogo from "../assets/atlas-logo.svg";
 
 const Sidebar = () => {
   const { logout, user } = useAuth();
@@ -11,12 +12,14 @@ const Sidebar = () => {
 
   return (
     <aside className="flex h-screen w-64 flex-col border-r border-border bg-surface px-6 py-6">
-      <div className="flex items-center gap-2">
-        <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-text text-white">
-          A
-        </div>
+      <Link to="/" className="flex items-center gap-2" aria-label="Atlas home">
+        <img
+          src={atlasLogo}
+          alt="Atlas logo"
+          className="h-9 w-9 rounded-lg object-contain"
+        />
         <span className="text-lg font-semibold">Atlas</span>
-      </div>
+      </Link>
 
       <nav className="mt-8 space-y-2">
         <NavLink
