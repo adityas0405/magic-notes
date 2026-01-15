@@ -4,9 +4,16 @@ import '../models/drawing.dart';
 import '../services/api_service.dart';
 
 class MagicCanvas extends StatefulWidget {
-  const MagicCanvas({super.key, required this.apiService});
+  const MagicCanvas({
+    super.key,
+    required this.apiService,
+    required this.onRequestToken,
+    required this.onAuthExpired,
+  });
 
   final ApiService apiService;
+  final VoidCallback onRequestToken;
+  final VoidCallback onAuthExpired;
 
   @override
   State<MagicCanvas> createState() => _MagicCanvasState();
@@ -19,11 +26,23 @@ class _MagicCanvasState extends State<MagicCanvas> {
 
   @override
   Widget build(BuildContext context) {
+    final hasToken = widget.apiService.hasAuthToken;
+
     return Scaffold(
       backgroundColor: Colors.white,
       appBar: AppBar(
         title: const Text('Magic Notebook'),
         backgroundColor: const Color.fromARGB(255, 192, 158, 252),
+        actions: [
+          TextButton.icon(
+            onPressed: widget.onRequestToken,
+            icon: const Icon(Icons.key, color: Colors.white),
+            label: const Text(
+              'Change Token',
+              style: TextStyle(color: Colors.white),
+            ),
+          ),
+        ],
       ),
       body: Column(
         children: [
@@ -71,7 +90,9 @@ class _MagicCanvasState extends State<MagicCanvas> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    statusMessage,
+                    hasToken
+                        ? statusMessage
+                        : 'No auth token set. Tap "Change Token" in the top bar.',
                     style: Theme.of(context)
                         .textTheme
                         .bodySmall
@@ -94,6 +115,14 @@ class _MagicCanvasState extends State<MagicCanvas> {
                       Expanded(
                         child: ElevatedButton.icon(
                           onPressed: () async {
+                            if (!widget.apiService.hasAuthToken) {
+                              setState(() {
+                                statusMessage =
+                                    'Missing token. Tap "Change Token" first.';
+                              });
+                              return;
+                            }
+
                             if (strokes.isEmpty) {
                               setState(() {
                                 statusMessage = 'Draw something first.';
@@ -106,19 +135,32 @@ class _MagicCanvasState extends State<MagicCanvas> {
                             });
 
                             try {
-                              final noteId = await widget.apiService.createNote(
-                                title: 'Captured Note',
-                                device: 'samsung-tab-s7',
+                              final noteId =
+                                  await widget.apiService.createNote(
+                                deviceType: 'tablet',
                               );
-                              await widget.apiService.uploadStrokes(noteId, strokes);
-                              if (!context.mounted) return;
+                              await widget.apiService
+                                  .uploadStrokes(noteId, strokes);
+
+                              if (!mounted) return;
                               setState(() {
                                 statusMessage = 'Uploaded note #$noteId';
                               });
                             } catch (error) {
-                              if (!context.mounted) return;
+                              if (error is ApiUnauthorizedException) {
+                                if (mounted) {
+                                  setState(() {
+                                    statusMessage =
+                                        'Token expired. Please re-enter.';
+                                  });
+                                }
+                                widget.onAuthExpired();
+                                return;
+                              }
+                              if (!mounted) return;
                               setState(() {
-                                statusMessage = 'Failed to connect. Check backend.';
+                                statusMessage =
+                                    'Upload failed (auth or backend).';
                               });
                             }
                           },

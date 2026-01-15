@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
 import '../config.dart';
@@ -7,23 +8,39 @@ import '../models/drawing.dart';
 import '../models/note.dart';
 
 class ApiService {
-  ApiService({this.baseUrl = apiBaseUrl, String? authToken})
-      : _authToken = authToken;
+  ApiService({
+    this.baseUrl = API_BASE_URL,
+    FlutterSecureStorage? secureStorage,
+    String? authToken,
+  })  : _secureStorage = secureStorage ?? const FlutterSecureStorage(),
+        _authToken = authToken;
 
   final String baseUrl;
+  final FlutterSecureStorage _secureStorage;
   String? _authToken;
 
-  /// Example login flow:
-  /// final response = await http.post(
-  ///   Uri.parse('$baseUrl/api/auth/login'),
-  ///   headers: {'Content-Type': 'application/json'},
-  ///   body: jsonEncode({'email': email, 'password': password}),
-  /// );
-  /// final decoded = jsonDecode(response.body) as Map<String, dynamic>;
-  /// apiService.setAuthToken(decoded['access_token'] as String);
-  void setAuthToken(String token) {
+  /// Persist + set the auth token (JWT).
+  Future<void> setAuthToken(String token) async {
     _authToken = token;
+    await _secureStorage.write(key: _storageTokenKey, value: token);
   }
+
+  /// Load a persisted auth token (JWT) into memory.
+  Future<void> loadAuthToken() async {
+    final token = await _secureStorage.read(key: _storageTokenKey);
+    if (token != null && token.isNotEmpty) {
+      _authToken = token;
+    }
+  }
+
+  /// Clear token from memory + storage (logout / reset).
+  Future<void> clearAuthToken() async {
+    _authToken = null;
+    await _secureStorage.delete(key: _storageTokenKey);
+  }
+
+  /// Optional helper: is a token currently available?
+  bool get hasAuthToken => _authToken != null && _authToken!.isNotEmpty;
 
   Map<String, String> _headers({bool json = true}) {
     final headers = <String, String>{};
@@ -36,50 +53,49 @@ class ApiService {
     return headers;
   }
 
-  Future<int> createNote({String? title, String? device, int? notebookId}) async {
+  Future<int> createNote({String? deviceType, String? deviceId}) async {
+    final uri = _buildUri('/api/notes');
     final payload = {
-      'title': title,
-      'device': device ?? 'samsung-tab-s7',
-      'notebook_id': notebookId,
+      'device_type': deviceType ?? 'tablet',
+      'device_id': deviceId,
     }..removeWhere((key, value) => value == null);
 
     final response = await http.post(
-      Uri.parse('$baseUrl/api/notes'),
+      uri,
       headers: _headers(),
       body: jsonEncode(payload),
     );
 
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw Exception('Failed to create note (${response.statusCode}).');
-    }
+    await _throwIfError(
+      response,
+      'Failed to create note',
+    );
 
     final decoded = jsonDecode(response.body) as Map<String, dynamic>;
     return decoded['id'] as int;
   }
 
   Future<void> uploadStrokes(int noteId, List<Stroke> strokes) async {
+    final uri = _buildUri('/api/notes/$noteId/strokes');
     final payload = {
       'strokes': strokes.map((s) => s.toJson()).toList(),
       'captured_at': DateTime.now().toIso8601String(),
     };
 
     final response = await http.post(
-      Uri.parse('$baseUrl/api/notes/$noteId/strokes'),
+      uri,
       headers: _headers(),
       body: jsonEncode(payload),
     );
 
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw Exception('Failed to upload strokes (${response.statusCode}).');
-    }
+    await _throwIfError(response, 'Failed to upload strokes');
   }
 
   Future<List<NotebookSummary>> fetchNotebooks() async {
     final response =
-        await http.get(Uri.parse('$baseUrl/api/library'), headers: _headers());
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw Exception('Failed to load library (${response.statusCode}).');
-    }
+        await http.get(_buildUri('/api/library'), headers: _headers());
+
+    await _throwIfError(response, 'Failed to load library');
 
     final decoded = jsonDecode(response.body) as Map<String, dynamic>;
     final notebooks = (decoded['notebooks'] as List<dynamic>? ?? []);
@@ -90,12 +106,11 @@ class ApiService {
 
   Future<List<NoteSummary>> fetchNotes(int notebookId) async {
     final response = await http.get(
-      Uri.parse('$baseUrl/api/notebooks/$notebookId/notes'),
+      _buildUri('/api/notebooks/$notebookId/notes'),
       headers: _headers(),
     );
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw Exception('Failed to load notes (${response.statusCode}).');
-    }
+
+    await _throwIfError(response, 'Failed to load notes');
 
     final decoded = jsonDecode(response.body) as List<dynamic>;
     return decoded.map((note) => NoteSummary.fromJson(note)).toList();
@@ -103,12 +118,11 @@ class ApiService {
 
   Future<NoteDetail> fetchNoteDetail(int noteId) async {
     final response = await http.get(
-      Uri.parse('$baseUrl/api/notes/$noteId'),
+      _buildUri('/api/notes/$noteId'),
       headers: _headers(),
     );
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw Exception('Failed to load note (${response.statusCode}).');
-    }
+
+    await _throwIfError(response, 'Failed to load note');
 
     final decoded = jsonDecode(response.body) as Map<String, dynamic>;
     return NoteDetail.fromJson(decoded);
@@ -126,6 +140,49 @@ class ApiService {
 
     return Uri.parse(baseUrl).resolve(fileUrl).toString();
   }
+
+  // --- helpers ---
+
+  static const String _storageTokenKey = 'auth_token';
+
+  Uri _buildUri(String path) {
+    if (baseUrl.isEmpty) {
+      throw StateError(
+        'API base URL is not configured. '
+        'Provide --dart-define=API_BASE_URL=https://your-api-host',
+      );
+    }
+    final normalizedPath = path.startsWith('/') ? path.substring(1) : path;
+    return Uri.parse(baseUrl).resolve(normalizedPath);
+  }
+
+  Future<void> _throwIfError(http.Response response, String message) async {
+    if (response.statusCode == 401) {
+      await clearAuthToken();
+      throw const ApiUnauthorizedException();
+    }
+
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception(
+        '$message (${response.statusCode}): ${_safeBody(response)}',
+      );
+    }
+  }
+
+  String _safeBody(http.Response response) {
+    try {
+      final body = response.body;
+      if (body.isEmpty) return '';
+      // Avoid huge logs
+      return body.length > 500 ? '${body.substring(0, 500)}…' : body;
+    } catch (_) {
+      return '';
+    }
+  }
+}
+
+class ApiUnauthorizedException implements Exception {
+  const ApiUnauthorizedException();
 }
 
 class NotebookSummary {

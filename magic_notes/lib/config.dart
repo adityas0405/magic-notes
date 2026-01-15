@@ -1,4 +1,4 @@
-const String apiBaseUrl = String.fromEnvironment(
+const String API_BASE_URL = String.fromEnvironment(
   'API_BASE_URL',
-  defaultValue: 'https://api.your-domain.com',
+  defaultValue: '',
 );
