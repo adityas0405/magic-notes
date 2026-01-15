@@ -28,12 +28,12 @@ def upgrade() -> None:
             sa.Column("is_inbox", sa.Boolean(), nullable=False, server_default=sa.false()),
         )
     if not _column_exists("notebooks", "inbox_type"):
-        op.add_column("notebooks", sa.Column("inbox_type", sa.String(), nullable=True))
+        op.add_column("notebooks", sa.Column("inbox_type", sa.Text(), nullable=True))
 
     if not _column_exists("notes", "ocr_text"):
         op.add_column("notes", sa.Column("ocr_text", sa.Text(), nullable=True))
     if not _column_exists("notes", "ocr_engine"):
-        op.add_column("notes", sa.Column("ocr_engine", sa.String(), nullable=True))
+        op.add_column("notes", sa.Column("ocr_engine", sa.Text(), nullable=True))
     if not _column_exists("notes", "ocr_confidence"):
         op.add_column("notes", sa.Column("ocr_confidence", sa.Float(), nullable=True))
     if not _column_exists("notes", "ocr_updated_at"):
