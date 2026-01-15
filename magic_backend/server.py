@@ -16,10 +16,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
-if importlib.util.find_spec("paddleocr") is None:
-    PaddleOCR = None
-else:
-    from paddleocr import PaddleOCR
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -30,6 +26,7 @@ from settings import (
     DATABASE_URL,
     JWT_EXPIRES_SECONDS,
     JWT_SECRET,
+    OCR_ENABLED,
     STORAGE_BACKEND,
     STORAGE_DIR,
     get_s3_client,
@@ -294,15 +291,18 @@ def run_paddleocr(image_path: str) -> Tuple[str, Optional[float]]:
 
 def get_ocr():
     global _OCR
-    if PaddleOCR is None:
-        raise RuntimeError("PaddleOCR is not available in this environment.")
     if _OCR is not None:
         return _OCR
     with _OCR_LOCK:
         if _OCR is None:
             try:
+                from paddleocr import PaddleOCR
                 _OCR = PaddleOCR(use_angle_cls=True, lang="en")
                 logger.info("OCR engine initialized.")
+            except ImportError as exc:
+                raise ImportError(
+                    "PaddleOCR is not available in this environment."
+                ) from exc
             except RuntimeError as exc:
                 if "PDX has already been initialized" in str(exc):
                     if _OCR is not None:
@@ -316,8 +316,8 @@ def get_ocr():
 
 def verify_ocr_reuse() -> None:
     """Run two OCR passes in the same process to verify reuse."""
-    if PaddleOCR is None:
-        logger.warning("PaddleOCR not available; skipping OCR reuse verification.")
+    if not OCR_ENABLED:
+        logger.warning("OCR disabled; skipping OCR reuse verification.")
         return
     if importlib.util.find_spec("PIL") is None:
         logger.warning("Pillow not available; skipping OCR reuse verification.")
@@ -353,6 +353,14 @@ def run_ocr_job(job_id: int) -> None:
             return
         if job.status not in {"queued", "running"}:
             return
+        if not OCR_ENABLED:
+            now = datetime.datetime.utcnow()
+            job.status = "failed"
+            job.error = "OCR is disabled. Set OCR_ENABLED=true to enable OCR jobs."
+            job.finished_at = now
+            job.updated_at = now
+            db.commit()
+            return
         now = datetime.datetime.utcnow()
         job.status = "running"
         job.started_at = now
@@ -368,7 +376,17 @@ def run_ocr_job(job_id: int) -> None:
             raise ValueError("Note not found for OCR job.")
 
         image_path = render_note_strokes_to_png(note, job.id)
-        text, confidence = run_paddleocr(image_path)
+        try:
+            text, confidence = run_paddleocr(image_path)
+        except (ImportError, RuntimeError) as exc:
+            now = datetime.datetime.utcnow()
+            job.status = "failed"
+            job.error = f"OCR initialization failed: {exc}"
+            job.finished_at = now
+            job.updated_at = now
+            db.commit()
+            logger.exception("OCR job %s failed during initialization", job_id)
+            return
         now = datetime.datetime.utcnow()
         note.ocr_text = text or ""
         note.ocr_engine = OCR_ENGINE
@@ -1093,6 +1111,11 @@ async def enqueue_ocr(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    if not OCR_ENABLED:
+        raise HTTPException(
+            status_code=409,
+            detail="OCR is disabled. Set OCR_ENABLED=true to enable OCR jobs.",
+        )
     note = owned_note(db, note_id, current_user.id)
     if not note:
         raise HTTPException(status_code=404, detail="Note not found")
