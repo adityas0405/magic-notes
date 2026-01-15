@@ -871,6 +871,7 @@ async def create_note(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    # Repro: new user signs up -> Flutter send -> note should create in Tablet Inbox.
     if payload.notebook_id:
         notebook = db.execute(
             select(Notebook).where(
@@ -881,15 +882,7 @@ async def create_note(
         if not notebook:
             raise HTTPException(status_code=404, detail="Notebook not found")
     else:
-        ensure_user_defaults(db, current_user)
-        notebook = db.execute(
-            select(Notebook)
-            .join(Subject)
-            .where(
-                Notebook.user_id == current_user.id,
-                Notebook.name == "Unsorted",
-            )
-        ).scalar_one()
+        notebook = ensure_user_inbox(db, current_user, "tablet")
 
     note = Note(
         title=payload.title or "Untitled Note",
