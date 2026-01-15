@@ -1,6 +1,6 @@
 import datetime
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import declarative_base, relationship
 
 Base = declarative_base()
@@ -39,6 +39,8 @@ class Notebook(Base):
     name = Column(String, nullable=False)
     color = Column(String, default="#14b8a6")
     icon = Column(String, default="Atom")
+    is_inbox = Column(Boolean, default=False)
+    inbox_type = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     subject_id = Column(Integer, ForeignKey("subjects.id", ondelete="CASCADE"), nullable=False)

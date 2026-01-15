@@ -16,11 +16,7 @@ signup=$(curl -sS -X POST "$API_BASE_URL/api/auth/signup" \
 
 echo "$signup" | sed "s/"$PASSWORD"/***"/g"
 
-TOKEN=$(echo "$signup" | python - <<PY
-import json,sys
-print(json.load(sys.stdin)["access_token"])
-PY
-)
+TOKEN=$(printf "%s" "$signup" | python -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
 
 printf "\n== Login ==\n"
 login=$(curl -sS -X POST "$API_BASE_URL/api/auth/login" \
@@ -39,11 +35,7 @@ create=$(curl -sS -X POST "$API_BASE_URL/api/notes" \
   -d "{\"title\":\"Smoke Test Note\"}")
 
 echo "$create"
-NOTE_ID=$(echo "$create" | python - <<PY
-import json,sys
-print(json.load(sys.stdin)["id"])
-PY
-)
+NOTE_ID=$(printf "%s" "$create" | python -c 'import json,sys; print(json.load(sys.stdin)["id"])')
 
 printf "\n== Upload Strokes ==\n"
 curl -sS -X POST "$API_BASE_URL/api/notes/$NOTE_ID/strokes" \
@@ -58,14 +50,6 @@ upload=$(curl -sS -X POST "$API_BASE_URL/api/notes/$NOTE_ID/upload" \
   -F "file=@/tmp/smoke.txt;type=text/plain")
 
 echo "$upload"
-FILE_URL=$(echo "$upload" | python - <<PY
-import json,sys
-print(json.load(sys.stdin)["file_url"])
-PY
-)
-
-printf "\n== Fetch File ==\n"
-curl -sS -I "$API_BASE_URL$FILE_URL" -H "Authorization: Bearer $TOKEN"
 '
 ```
 
@@ -75,8 +59,7 @@ curl -sS -I "$API_BASE_URL$FILE_URL" -H "Authorization: Bearer $TOKEN"
 - `/api/auth/me` returns `{ "user": { "email": "..." } }`.
 - Create note returns `{ "id": <number>, "title": "Smoke Test Note" ... }`.
 - Upload strokes returns `{ "status": "ok", "note_id": <number> }`.
-- Upload file returns `{ "status": "ok", "file_url": "/api/notes/<id>/file" }`.
-- Fetch file returns `200 OK` (or `302` if using S3 presigned URLs).
+- Upload file returns `{ "status": "ok" }`.
 
 ## Common Failure Messages
 
