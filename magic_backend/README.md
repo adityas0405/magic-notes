@@ -16,6 +16,7 @@ Use `magic_backend/.env.example` as a template and configure these in Railway/Fl
 - `STORAGE_BACKEND` (`s3` recommended)
 - S3 credentials (`S3_BUCKET`, `S3_REGION`, `S3_ENDPOINT_URL`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`)
 - `OCR_ENABLED` (optional, defaults to `false`; set `true` to enable OCR jobs)
+- `OCR_JOB_TIMEOUT_MINUTES` (optional, defaults to `10`; marks long-running OCR jobs as failed)
 
 ## OCR dependencies (Fly/Railway)
 
@@ -23,6 +24,31 @@ When `OCR_ENABLED=true`, ensure the deployed image installs OCR dependencies.
 `requirements.txt` includes `requirements-ocr.txt`, which installs local shim
 packages that depend on headless OpenCV wheels (including contrib) to avoid
 `libGL.so.1` errors on Fly.
+
+## Local OCR verification
+
+1. Set `OCR_ENABLED=true` in your local environment (and install OCR deps).
+2. Run the backend:
+
+   ```
+   uvicorn server:app --reload
+   ```
+
+3. Enqueue OCR for a note (replace `NOTE_ID` and `TOKEN`):
+
+   ```
+   curl -sS -X POST "http://127.0.0.1:8000/api/notes/NOTE_ID/ocr/enqueue" \
+     -H "Authorization: Bearer TOKEN"
+   ```
+
+4. Poll OCR status until it reports `success`:
+
+   ```
+   curl -sS "http://127.0.0.1:8000/api/notes/NOTE_ID/ocr" \
+     -H "Authorization: Bearer TOKEN"
+   ```
+
+5. Confirm `note.ocr_text` is populated in the response once the job succeeds.
 
 ## Run (cloud-style)
 
