@@ -62,4 +62,26 @@ npm run dev
 2. Backend stores metadata in PostgreSQL and files in object storage.
 3. Atlas web UI reads library and notes from the backend and displays them.
 
+## Stroke payload schema
+
+Stroke uploads (`POST /api/notes/{id}/strokes`) accept this shape:
+
+```json
+{
+  "strokes": [
+    {
+      "points": [
+        { "x": 12.3, "y": 45.6, "p": 0.7, "t": 0.1, "dt": 16 }
+      ]
+    }
+  ],
+  "captured_at": "2024-01-01T00:00:00Z"
+}
+```
+
+- `p` = pressure, `t` = tilt (both optional).
+- `dt` = milliseconds since the previous point in the same stroke (optional).
+- Backward compatible: older clients may omit `dt` entirely, and the backend
+  will normalize and store the strokes without timing.
+
 <!-- redeploy -->
