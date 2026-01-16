@@ -1171,7 +1171,6 @@ async def get_note(
         ],
     }
 
-
 @app.post("/api/notes/{note_id}/ocr/enqueue")
 async def enqueue_ocr(
     note_id: int,
@@ -1179,23 +1178,28 @@ async def enqueue_ocr(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    # Principle: feature-flagged, non-fatal. If disabled, fail fast with clear signal.
     if not OCR_ENABLED:
-        raise HTTPException(
-            status_code=503,
-            detail="OCR disabled",
-        )
+        raise HTTPException(status_code=503, detail="OCR disabled")
+
     note = owned_note(db, note_id, current_user.id)
     if not note:
         raise HTTPException(status_code=404, detail="Note not found")
 
+    # Principle: idempotency. If an OCR job is already queued/running for this note, return it.
+    # Also: do not assume uniqueness; select latest and limit to 1.
     existing_job = db.execute(
-        select(AIJob).where(
+        select(AIJob)
+        .where(
             AIJob.note_id == note.id,
             AIJob.user_id == current_user.id,
             AIJob.job_type == "ocr",
             AIJob.status.in_([JOB_STATUS_QUEUED, JOB_STATUS_RUNNING]),
         )
-    ).scalar_one_or_none()
+        .order_by(AIJob.created_at.desc(), AIJob.id.desc())
+        .limit(1)
+    ).scalars().first()
+
     if existing_job:
         return {"job": serialize_ai_job(existing_job)}
 
@@ -1212,7 +1216,9 @@ async def enqueue_ocr(
     db.commit()
     db.refresh(job)
 
+    # Principle: async + isolated (within current constraints). Never block request thread.
     background_tasks.add_task(run_ocr_job, job.id)
+
     return {"job": serialize_ai_job(job)}
 
 
@@ -1226,6 +1232,7 @@ async def get_note_ocr(
     if not note:
         raise HTTPException(status_code=404, detail="Note not found")
 
+    # Principle: feature-flagged behavior should be explicit and safe.
     if not OCR_ENABLED:
         return {
             "note_id": note.id,
@@ -1233,12 +1240,11 @@ async def get_note_ocr(
             "ocr_text": note.ocr_text,
             "ocr_engine": note.ocr_engine,
             "ocr_confidence": note.ocr_confidence,
-            "ocr_updated_at": note.ocr_updated_at.isoformat()
-            if note.ocr_updated_at
-            else None,
+            "ocr_updated_at": note.ocr_updated_at.isoformat() if note.ocr_updated_at else None,
             "job": None,
         }
 
+    # Principle: status endpoint must never 500 due to duplicates; always pick latest deterministically.
     latest_job = db.execute(
         select(AIJob)
         .where(
@@ -1246,11 +1252,24 @@ async def get_note_ocr(
             AIJob.user_id == current_user.id,
             AIJob.job_type == "ocr",
         )
-        .order_by(AIJob.created_at.desc())
-    ).scalar_one_or_none()
+        .order_by(AIJob.created_at.desc(), AIJob.id.desc())
+        .limit(1)
+    ).scalars().first()
+
+    # Optional but helpful: a top-level status that the frontend can rely on.
+    # - If a job exists, status is job status.
+    # - Else if text exists, treat as success (legacy/backfilled).
+    # - Else idle.
+    if latest_job:
+        status = latest_job.status
+    elif note.ocr_text:
+        status = JOB_STATUS_SUCCESS if "JOB_STATUS_SUCCESS" in globals() else "success"
+    else:
+        status = "idle"
 
     return {
         "note_id": note.id,
+        "status": status,
         "ocr_text": note.ocr_text,
         "ocr_engine": note.ocr_engine,
         "ocr_confidence": note.ocr_confidence,
