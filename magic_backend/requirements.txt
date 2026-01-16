@@ -9,3 +9,4 @@ boto3
 psycopg2-binary
 python-dotenv
 Pillow
+-r requirements-ocr.txt

@@ -1,3 +1,4 @@
-paddleocr
-paddlepaddle
-opencv-python-headless
+paddleocr==2.8.1
+paddlepaddle==2.6.2
+./vendor/opencv-python
+./vendor/opencv-contrib-python
