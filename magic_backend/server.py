@@ -5,7 +5,6 @@ import logging
 import math
 import os
 import tempfile
-import threading
 import uuid
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -20,6 +19,7 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from models import AIJob, Flashcard, Note, NoteFile, NoteStroke, Notebook, Subject, User
+from ocr.registry import get_engine
 from settings import (
     CORS_ORIGINS,
     CORS_ORIGIN_REGEX,
@@ -55,8 +55,6 @@ os.makedirs(OCR_IMAGE_DIR, exist_ok=True)
 OCR_ENGINE = "paddleocr"
 
 logger = logging.getLogger(__name__)
-_OCR = None
-_OCR_LOCK = threading.Lock()
 
 JOB_STATUS_QUEUED = "queued"
 JOB_STATUS_RUNNING = "running"
@@ -269,72 +267,6 @@ def render_note_strokes_to_png(note: Note, job_id: int) -> str:
     return image_path
 
 
-def run_paddleocr(ocr, image_path: str) -> Tuple[str, Optional[float]]:
-    result = ocr.ocr(image_path, cls=True)
-    if not result:
-        return "", None
-
-    lines: List[str] = []
-    confidences: List[float] = []
-    for page in result:
-        for entry in page:
-            if not entry or len(entry) < 2:
-                continue
-            text_info = entry[1]
-            if not isinstance(text_info, (list, tuple)) or len(text_info) < 2:
-                continue
-            text, confidence = text_info[0], text_info[1]
-            if text:
-                lines.append(str(text))
-            if confidence is not None:
-                try:
-                    confidences.append(float(confidence))
-                except (TypeError, ValueError):
-                    continue
-
-    if not lines:
-        return "", None
-
-    avg_confidence = None
-    if confidences:
-        avg_confidence = sum(confidences) / len(confidences)
-    return "\n".join(lines).strip(), avg_confidence
-
-
-def get_ocr():
-    global _OCR
-    if _OCR is not None:
-        return _OCR
-    with _OCR_LOCK:
-        if _OCR is None:
-            try:
-                if not os.environ.get("OMP_NUM_THREADS"):
-                    os.environ["OMP_NUM_THREADS"] = "1"
-                if not os.environ.get("MKL_NUM_THREADS"):
-                    os.environ["MKL_NUM_THREADS"] = "1"
-                from paddleocr import PaddleOCR
-                _OCR = PaddleOCR(
-                    use_angle_cls=False,
-                    lang="en",
-                    use_gpu=False,
-                    show_log=False,
-                )
-                logger.info("OCR engine initialized.")
-            except ImportError as exc:
-                raise ImportError(
-                    "PaddleOCR is not available in this environment."
-                ) from exc
-            except RuntimeError as exc:
-                if "PDX has already been initialized" in str(exc):
-                    if _OCR is not None:
-                        logger.warning(
-                            "PaddleX already initialized; reusing existing OCR instance."
-                        )
-                        return _OCR
-                raise
-    return _OCR
-
-
 def verify_ocr_reuse() -> None:
     """Run two OCR passes in the same process to verify reuse."""
     if not OCR_ENABLED:
@@ -350,11 +282,14 @@ def verify_ocr_reuse() -> None:
     try:
         image = Image.new("RGB", (16, 16), color="white")
         image.save(image_path, format="PNG")
+        engine = get_engine(OCR_ENGINE)
+        if not engine:
+            logger.warning("OCR engine unavailable; skipping OCR reuse verification.")
+            return
         logger.info("Starting OCR verification run 1.")
-        ocr = get_ocr()
-        run_paddleocr(ocr, image_path)
+        engine.run(image_path)
         logger.info("Starting OCR verification run 2.")
-        run_paddleocr(ocr, image_path)
+        engine.run(image_path)
         logger.info("OCR verification completed.")
     finally:
         try:
@@ -401,26 +336,42 @@ def run_ocr_job(job_id: int) -> None:
         logger.info("render image start job_id=%s note_id=%s", job.id, note.id)
         image_path = render_note_strokes_to_png(note, job.id)
         logger.info("render image finish job_id=%s note_id=%s", job.id, note.id)
-        try:
-            logger.info("paddleocr init start job_id=%s note_id=%s", job.id, note.id)
-            ocr = get_ocr()
-            logger.info("paddleocr init finish job_id=%s note_id=%s", job.id, note.id)
-            logger.info("ocr inference start job_id=%s note_id=%s", job.id, note.id)
-            text, confidence = run_paddleocr(ocr, image_path)
-            logger.info("ocr inference finish job_id=%s note_id=%s", job.id, note.id)
-        except (ImportError, RuntimeError) as exc:
+        engine = get_engine(OCR_ENGINE)
+        if not engine:
             now = datetime.datetime.utcnow()
             job.status = JOB_STATUS_FAILED
-            job.error = f"OCR initialization failed: {exc}"
+            job.error = f"OCR engine '{OCR_ENGINE}' is unavailable."
             job.finished_at = now
             job.updated_at = now
             db.commit()
-            logger.exception("OCR job %s failed during initialization", job_id)
+            return
+        try:
+            logger.info(
+                "ocr run start engine=%s job_id=%s note_id=%s",
+                engine.name,
+                job.id,
+                note.id,
+            )
+            text, confidence = engine.run(image_path)
+            logger.info(
+                "ocr run finish engine=%s job_id=%s note_id=%s",
+                engine.name,
+                job.id,
+                note.id,
+            )
+        except (ImportError, RuntimeError) as exc:
+            now = datetime.datetime.utcnow()
+            job.status = JOB_STATUS_FAILED
+            job.error = f"OCR engine '{engine.name}' failed: {exc}"
+            job.finished_at = now
+            job.updated_at = now
+            db.commit()
+            logger.exception("OCR job %s failed during OCR run", job_id)
             return
         now = datetime.datetime.utcnow()
         logger.info("save results start job_id=%s note_id=%s", job.id, note.id)
         note.ocr_text = text or ""
-        note.ocr_engine = OCR_ENGINE
+        note.ocr_engine = engine.name
         note.ocr_confidence = confidence
         note.ocr_updated_at = now
         job.status = JOB_STATUS_SUCCESS
