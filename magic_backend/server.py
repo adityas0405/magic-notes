@@ -180,6 +180,54 @@ def serialize_note_stroke(stroke: NoteStroke) -> Dict[str, Any]:
     }
 
 
+def normalize_stroke_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    strokes = payload.get("strokes") or []
+    normalized_strokes: List[Dict[str, Any]] = []
+
+    for stroke in strokes:
+        if not isinstance(stroke, dict):
+            continue
+        candidates = stroke.get("points") or stroke.get("path") or stroke.get("segments")
+        if isinstance(stroke.get("x"), list) and isinstance(stroke.get("y"), list):
+            candidates = list(zip(stroke.get("x"), stroke.get("y")))
+
+        normalized_points: List[Dict[str, Any]] = []
+        if candidates:
+            for point in candidates:
+                x = y = None
+                pressure = tilt = dt = None
+                if isinstance(point, dict):
+                    x = point.get("x")
+                    y = point.get("y")
+                    pressure = point.get("p", point.get("pressure"))
+                    tilt = point.get("t", point.get("tilt"))
+                    dt = point.get("dt")
+                elif isinstance(point, (list, tuple)) and len(point) >= 2:
+                    x, y = point[0], point[1]
+                if x is None or y is None:
+                    continue
+                normalized_point: Dict[str, Any] = {
+                    "x": float(x),
+                    "y": float(y),
+                    "pressure": None if pressure is None else float(pressure),
+                    "tilt": None if tilt is None else float(tilt),
+                }
+                if dt is not None:
+                    try:
+                        normalized_point["dt"] = int(dt)
+                    except (TypeError, ValueError):
+                        pass
+                normalized_points.append(normalized_point)
+
+        normalized_stroke = dict(stroke)
+        normalized_stroke["points"] = normalized_points
+        normalized_strokes.append(normalized_stroke)
+
+    normalized_payload = dict(payload)
+    normalized_payload["strokes"] = normalized_strokes
+    return normalized_payload
+
+
 def _iter_stroke_points(stroke: Dict[str, Any]) -> Iterable[Tuple[float, float]]:
     candidates = stroke.get("points") or stroke.get("path") or stroke.get("segments")
     if isinstance(stroke.get("x"), list) and isinstance(stroke.get("y"), list):
@@ -1023,7 +1071,7 @@ async def add_strokes(
     db.add(
         NoteStroke(
             note_id=note.id,
-            payload=json.dumps(payload.dict()),
+            payload=json.dumps(normalize_stroke_payload(payload.dict())),
         )
     )
     note.updated_at = datetime.datetime.utcnow()

@@ -41,7 +41,7 @@ printf "\n== Upload Strokes ==\n"
 curl -sS -X POST "$API_BASE_URL/api/notes/$NOTE_ID/strokes" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d "{\"strokes\":[{\"points\":[{\"x\":0,\"y\":0,\"t\":0}]}],\"captured_at\":\"2024-01-01T00:00:00Z\"}"
+  -d "{\"strokes\":[{\"points\":[{\"x\":0,\"y\":0,\"t\":0,\"dt\":0}]}],\"captured_at\":\"2024-01-01T00:00:00Z\"}"
 
 printf "\n\n== Upload File ==\n"
 printf "Hello" > /tmp/smoke.txt

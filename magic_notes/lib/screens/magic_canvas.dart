@@ -22,6 +22,8 @@ class MagicCanvas extends StatefulWidget {
 class _MagicCanvasState extends State<MagicCanvas> {
   final List<Stroke> strokes = [];
   Stroke? currentStroke;
+  Stopwatch? strokeStopwatch;
+  int? lastElapsedMs;
   String statusMessage = 'Ready to capture.';
 
   @override
@@ -52,15 +54,21 @@ class _MagicCanvasState extends State<MagicCanvas> {
                 setState(() {
                   currentStroke = Stroke([]);
                   strokes.add(currentStroke!);
+                  strokeStopwatch = Stopwatch()..start();
+                  lastElapsedMs = 0;
                 });
               },
               onPointerMove: (details) {
                 setState(() {
+                  final elapsedMs = strokeStopwatch?.elapsedMilliseconds ?? 0;
+                  final dt = elapsedMs - (lastElapsedMs ?? elapsedMs);
+                  lastElapsedMs = elapsedMs;
                   final point = DrawingPoint(
                     x: details.localPosition.dx,
                     y: details.localPosition.dy,
                     pressure: details.pressure,
                     tilt: details.tilt,
+                    dt: dt < 0 ? 0 : dt,
                   );
                   currentStroke!.points.add(point);
                 });
@@ -68,6 +76,9 @@ class _MagicCanvasState extends State<MagicCanvas> {
               onPointerUp: (details) {
                 setState(() {
                   currentStroke = null;
+                  strokeStopwatch?.stop();
+                  strokeStopwatch = null;
+                  lastElapsedMs = null;
                 });
               },
               child: CustomPaint(
