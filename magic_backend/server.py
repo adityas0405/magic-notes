@@ -27,6 +27,7 @@ from settings import (
     JWT_EXPIRES_SECONDS,
     JWT_SECRET,
     OCR_ENABLED,
+    OCR_JOB_TIMEOUT_MINUTES,
     STORAGE_BACKEND,
     STORAGE_DIR,
     get_s3_client,
@@ -57,6 +58,13 @@ logger = logging.getLogger(__name__)
 _OCR = None
 _OCR_LOCK = threading.Lock()
 
+JOB_STATUS_QUEUED = "queued"
+JOB_STATUS_RUNNING = "running"
+JOB_STATUS_SUCCESS = "success"
+JOB_STATUS_FAILED = "failed"
+
+OCR_JOB_TIMEOUT = datetime.timedelta(minutes=OCR_JOB_TIMEOUT_MINUTES)
+
 # ------------------------------------------------------------------
 # App setup
 # ------------------------------------------------------------------
@@ -70,6 +78,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+def startup_tasks() -> None:
+    mark_stale_ocr_jobs()
 
 # ------------------------------------------------------------------
 # Auth + DB helpers
@@ -256,8 +269,7 @@ def render_note_strokes_to_png(note: Note, job_id: int) -> str:
     return image_path
 
 
-def run_paddleocr(image_path: str) -> Tuple[str, Optional[float]]:
-    ocr = get_ocr()
+def run_paddleocr(ocr, image_path: str) -> Tuple[str, Optional[float]]:
     result = ocr.ocr(image_path, cls=True)
     if not result:
         return "", None
@@ -296,8 +308,17 @@ def get_ocr():
     with _OCR_LOCK:
         if _OCR is None:
             try:
+                if not os.environ.get("OMP_NUM_THREADS"):
+                    os.environ["OMP_NUM_THREADS"] = "1"
+                if not os.environ.get("MKL_NUM_THREADS"):
+                    os.environ["MKL_NUM_THREADS"] = "1"
                 from paddleocr import PaddleOCR
-                _OCR = PaddleOCR(use_angle_cls=True, lang="en")
+                _OCR = PaddleOCR(
+                    use_angle_cls=False,
+                    lang="en",
+                    use_gpu=False,
+                    show_log=False,
+                )
                 logger.info("OCR engine initialized.")
             except ImportError as exc:
                 raise ImportError(
@@ -330,9 +351,10 @@ def verify_ocr_reuse() -> None:
         image = Image.new("RGB", (16, 16), color="white")
         image.save(image_path, format="PNG")
         logger.info("Starting OCR verification run 1.")
-        run_paddleocr(image_path)
+        ocr = get_ocr()
+        run_paddleocr(ocr, image_path)
         logger.info("Starting OCR verification run 2.")
-        run_paddleocr(image_path)
+        run_paddleocr(ocr, image_path)
         logger.info("OCR verification completed.")
     finally:
         try:
@@ -351,18 +373,18 @@ def run_ocr_job(job_id: int) -> None:
         job = db.get(AIJob, job_id)
         if not job:
             return
-        if job.status not in {"queued", "running"}:
+        if job.status not in {JOB_STATUS_QUEUED, JOB_STATUS_RUNNING}:
             return
         if not OCR_ENABLED:
             now = datetime.datetime.utcnow()
-            job.status = "failed"
+            job.status = JOB_STATUS_FAILED
             job.error = "OCR is disabled. Set OCR_ENABLED=true to enable OCR jobs."
             job.finished_at = now
             job.updated_at = now
             db.commit()
             return
         now = datetime.datetime.utcnow()
-        job.status = "running"
+        job.status = JOB_STATUS_RUNNING
         job.started_at = now
         job.updated_at = now
         db.commit()
@@ -375,12 +397,20 @@ def run_ocr_job(job_id: int) -> None:
         if not note:
             raise ValueError("Note not found for OCR job.")
 
+        logger.info("OCR job start job_id=%s note_id=%s", job.id, note.id)
+        logger.info("render image start job_id=%s note_id=%s", job.id, note.id)
         image_path = render_note_strokes_to_png(note, job.id)
+        logger.info("render image finish job_id=%s note_id=%s", job.id, note.id)
         try:
-            text, confidence = run_paddleocr(image_path)
+            logger.info("paddleocr init start job_id=%s note_id=%s", job.id, note.id)
+            ocr = get_ocr()
+            logger.info("paddleocr init finish job_id=%s note_id=%s", job.id, note.id)
+            logger.info("ocr inference start job_id=%s note_id=%s", job.id, note.id)
+            text, confidence = run_paddleocr(ocr, image_path)
+            logger.info("ocr inference finish job_id=%s note_id=%s", job.id, note.id)
         except (ImportError, RuntimeError) as exc:
             now = datetime.datetime.utcnow()
-            job.status = "failed"
+            job.status = JOB_STATUS_FAILED
             job.error = f"OCR initialization failed: {exc}"
             job.finished_at = now
             job.updated_at = now
@@ -388,24 +418,62 @@ def run_ocr_job(job_id: int) -> None:
             logger.exception("OCR job %s failed during initialization", job_id)
             return
         now = datetime.datetime.utcnow()
+        logger.info("save results start job_id=%s note_id=%s", job.id, note.id)
         note.ocr_text = text or ""
         note.ocr_engine = OCR_ENGINE
         note.ocr_confidence = confidence
         note.ocr_updated_at = now
-        job.status = "succeeded"
+        job.status = JOB_STATUS_SUCCESS
         job.finished_at = now
         job.updated_at = now
         db.commit()
+        logger.info("save results finish job_id=%s note_id=%s", job.id, note.id)
     except Exception as exc:  # noqa: BLE001 - preserve job failure detail
         now = datetime.datetime.utcnow()
         job = db.get(AIJob, job_id)
         if job:
-            job.status = "failed"
+            job.status = JOB_STATUS_FAILED
             job.error = str(exc)
             job.finished_at = now
             job.updated_at = now
             db.commit()
         logger.exception("OCR job %s failed", job_id)
+    finally:
+        db.close()
+
+
+def mark_stale_ocr_jobs() -> None:
+    if not OCR_JOB_TIMEOUT:
+        return
+    db = SessionLocal()
+    try:
+        now = datetime.datetime.utcnow()
+        running_jobs = db.execute(
+            select(AIJob).where(
+                AIJob.job_type == "ocr",
+                AIJob.status == JOB_STATUS_RUNNING,
+            )
+        ).scalars().all()
+        stale_jobs: List[AIJob] = []
+        for job in running_jobs:
+            started_at = job.started_at or job.created_at
+            if not started_at:
+                continue
+            if now - started_at > OCR_JOB_TIMEOUT:
+                stale_jobs.append(job)
+        for job in stale_jobs:
+            job.status = JOB_STATUS_FAILED
+            job.error = (
+                f"OCR job timed out after {OCR_JOB_TIMEOUT_MINUTES} minutes."
+            )
+            job.finished_at = now
+            job.updated_at = now
+        if stale_jobs:
+            db.commit()
+            logger.warning(
+                "Marked %s stale OCR jobs as failed.",
+                len(stale_jobs),
+            )
     finally:
         db.close()
 
@@ -1113,8 +1181,8 @@ async def enqueue_ocr(
 ):
     if not OCR_ENABLED:
         raise HTTPException(
-            status_code=409,
-            detail="OCR is disabled. Set OCR_ENABLED=true to enable OCR jobs.",
+            status_code=503,
+            detail="OCR disabled",
         )
     note = owned_note(db, note_id, current_user.id)
     if not note:
@@ -1125,7 +1193,7 @@ async def enqueue_ocr(
             AIJob.note_id == note.id,
             AIJob.user_id == current_user.id,
             AIJob.job_type == "ocr",
-            AIJob.status.in_(["queued", "running"]),
+            AIJob.status.in_([JOB_STATUS_QUEUED, JOB_STATUS_RUNNING]),
         )
     ).scalar_one_or_none()
     if existing_job:
@@ -1136,7 +1204,7 @@ async def enqueue_ocr(
         note_id=note.id,
         user_id=current_user.id,
         job_type="ocr",
-        status="queued",
+        status=JOB_STATUS_QUEUED,
         created_at=now,
         updated_at=now,
     )
@@ -1157,6 +1225,19 @@ async def get_note_ocr(
     note = owned_note(db, note_id, current_user.id)
     if not note:
         raise HTTPException(status_code=404, detail="Note not found")
+
+    if not OCR_ENABLED:
+        return {
+            "note_id": note.id,
+            "status": "disabled",
+            "ocr_text": note.ocr_text,
+            "ocr_engine": note.ocr_engine,
+            "ocr_confidence": note.ocr_confidence,
+            "ocr_updated_at": note.ocr_updated_at.isoformat()
+            if note.ocr_updated_at
+            else None,
+            "job": None,
+        }
 
     latest_job = db.execute(
         select(AIJob)

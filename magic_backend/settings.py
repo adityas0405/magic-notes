@@ -40,6 +40,7 @@ OCR_ENABLED = os.environ.get("OCR_ENABLED", "false").strip().lower() in {
     "yes",
     "on",
 }
+OCR_JOB_TIMEOUT_MINUTES = int(os.environ.get("OCR_JOB_TIMEOUT_MINUTES", "10"))
 
 
 @dataclass(frozen=True)
